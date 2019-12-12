@@ -1,0 +1,139 @@
+/*{
+	"type": "action",
+	"targets": ["omnioutliner"],
+	"author": "Andrey Tarantsov",
+	"identifier": "com.tarantsov.automation.omniEstimate",
+	"version": "1.0",
+	"description": "Update the totals on the estimate",
+	"label": "Update Estimate",
+	"shortLabel": "Estimate"
+}*/
+var _ = function(){
+    const riskFactors = {
+        'L': 0.9,
+        'N': 1.3,
+        'H!': 1.6,
+        'E!!': 1.9,
+        'a': 0
+    }
+
+	const action = new PlugIn.Action(function(selection, sender){
+        const document = selection.document
+        const outline = document.outline
+        const taskColumn = outline.columns.byTitle('Task')
+        const estimateColumn = outline.columns.byTitle('Est')
+        const riskColumn = outline.columns.byTitle('Risk')
+        const averageColumn = outline.columns.byTitle('Avg')
+
+        function getTitle(item) {
+            let value = item.valueForColumn(taskColumn)
+            if (value) {
+                return value.string
+            } else {
+                return ''
+            }
+        }
+
+        function getEstimate(item) {
+            let decimalValue = item.valueForColumn(estimateColumn)
+            if (decimalValue) {
+                return parseFloat(decimalValue.toString())
+            } else {
+                return null
+            }
+        }
+
+        function getRisk(item) {
+            let enumValue = item.valueForColumn(riskColumn)
+            if (enumValue) {
+                let name = enumValue.name
+                if (riskFactors.hasOwnProperty(name)) {
+                    return name
+                } else {
+                    throw new Error(`unknown risk value: ${name}`)
+                }
+            } else {
+                return null
+            }
+        }
+
+        function computeAverage(median, riskFactor) {
+            let factor = Math.exp(riskFactor*riskFactor / 2)
+            return median * factor
+        }
+
+        function roundAverage(average) {
+            if (average > 10) {
+                return Math.ceil(average - 0.2)
+            } else {
+                return Math.ceil(average * 10 - 0.2) / 10
+            }
+        }
+
+        function updateAverage(item, indentation, parentEstimate) {
+            let title = getTitle(item)
+            let estimate = getEstimate(item)
+            let risk = getRisk(item)
+            let isEmpty = (title === '' && estimate == null)
+            let isGroup = (/^Iteration/i.test(title))
+            let average = (estimate != null && risk != null ? computeAverage(estimate, riskFactors[risk]) : null)
+
+            let worstChildRisk = null
+            if (item.children.length > 0) {
+                console.log(indentation + `BEGIN ${title} | E=${estimate} R=${risk} A=${average}`)
+                let sumOfChildrenAverages = 0, childrenAveragesHaveNulls = false
+                item.children.forEach((child) => {
+                    let [childAverage, childRisk] = updateAverage(child, indentation + ". ", average)
+                    if (childAverage != null) {
+                        sumOfChildrenAverages += childAverage
+                    } else {
+                        childrenAveragesHaveNulls = true
+                    }
+                    if (worstChildRisk == null || riskFactors[childRisk] > riskFactors[worstChildRisk]) {
+                        worstChildRisk = childRisk
+                    }
+                })
+                if (!childrenAveragesHaveNulls) {
+                    if (average == null) {
+                        average = sumOfChildrenAverages
+                    } else {
+                        // TODO: warn if average < sumOfChildrenAverages
+                    }
+                }
+                console.log(indentation + `END ${title}`)
+            } else {
+                console.log(indentation + `${title} | E=${estimate} R=${risk} A=${average}`)
+            }
+
+            if (average == null && item.children.length === 0 && (isEmpty || isGroup)) {
+                average = 0
+            }
+
+            if (average != null && parentEstimate == null) {
+                item.setValueForColumn(Decimal.fromString('' + roundAverage(average)), averageColumn)
+            } else {
+                item.setValueForColumn(null, averageColumn)
+            }
+            if (estimate == null) {
+                if (worstChildRisk == null || average == null || item.level <= 1) {
+                    item.setValueForColumn(null, riskColumn)
+                } else {
+                    let member = riskColumn.enumeration.memberNamed(worstChildRisk)
+                    item.setValueForColumn(member, riskColumn)
+                }
+                risk = worstChildRisk
+            }
+
+            return [average, risk]
+        }
+
+        updateAverage(outline.rootItem, "", null)
+	})
+
+	action.validate = function(selection, sender) {
+		return true
+    }
+
+	return action
+}();
+_;
