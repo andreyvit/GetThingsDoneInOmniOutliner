@@ -1,0 +1,617 @@
+/*{
+	"type": "action",
+	"targets": ["omnioutliner"],
+	"author": "Andrey Tarantsov",
+	"identifier": "com.tarantsov.automation.omniTasks",
+	"version": "1.0",
+	"description": "GTD done right",
+	"label": "GTD",
+	"shortLabel": "GTD"
+}*/
+var _ = function(){
+    let calendar = Calendar.current
+
+    const config = {
+        // start days at 4am
+        startOfDayHour: 4
+    }
+
+    const behaviors = {
+        'default': {
+            isCommitted: false
+        },
+        'root': {
+            isCommitted: false,
+            isContainer: true,
+        },
+        'area': {
+            isCommitted: false,
+            isContainer: true,
+        },
+        'backlog': {
+            isCommitted: false,
+            isContainer: true,
+        },
+        'Inbox': {
+            isCommitted: false,
+            isContainer: true,
+        },
+        'Today': {
+            isCommitted: false,
+            isSchedulingCovered: true,
+        },
+        'Day': {
+            isCommitted: true,
+            isSchedulingCovered: true,
+            dueDays: 1,
+            reservedDays: 1,
+            redDays: 2,
+            criticalDays: 4,
+        },
+        '2-3 Days': {
+            isCommitted: true,
+            isSchedulingCovered: true,
+            dueDays: 2,
+            reservedDays: 2,
+            redDays: 3,
+            criticalDays: 5,
+        },
+        'Week': {
+            isCommitted: true,
+            isSchedulingCovered: true,
+            dueDays: 7,
+            reservedDays: 2,
+            redDays: 14,
+            criticalDays: 21,
+        },
+        'Month': {
+            isCommitted: true,
+            isSchedulingCovered: true,
+            dueDays: 30,
+            reservedDays: 5,
+            redDays: 60,
+            criticalDays: 90,
+        },
+        'Quarter': {
+            isCommitted: true,
+            isSchedulingCovered: true,
+            dueDays: 30 * 3,
+            reservedDays: 30,
+            redDays: 30 * 5,
+            criticalDays: 30 * 7,
+        },
+        'Year': {
+            isCommitted: true,
+            isSchedulingCovered: true,
+            dueDays: 365,
+            reservedDays: 30 * 2,
+            redDays: Math.floor(365 * 1.5),
+            criticalDays: Math.floor(365 * 2),
+        },
+        'Idea': {
+            isCommitted: false,
+            isSchedulingCovered: true,
+        },
+        'Blocked': {
+            isCommitted: false,
+            isSchedulingCovered: true,
+        },
+        'Waiting For': {
+            isCommitted: false,
+            isSchedulingCovered: true,
+        },
+        'Folder': {
+            isCommitted: false,
+            isContainer: false,
+        },
+    }
+
+    const modes = {
+        topLevel: {
+            name: 'topLevel',
+        },
+        topLevelItem: {
+            name: 'topLevelItem',
+        },
+        dailyItem: {
+            name: 'dailyItem',
+        },
+        regular: {
+            name: 'regular',
+        },
+    }
+
+    const urgencies = {
+        done: {
+            name: 'done',
+            isAttentionRequired: false,
+            isProminencyRequired: false,
+        },
+        normal: {
+            name: 'normal',
+            isProminencyRequired: false,
+            isAttentionRequired: false,
+        },
+        future: {
+            name: 'future',
+            futureStyle: true,
+            isProminencyRequired: false,
+            isAttentionRequired: false,
+        },
+        soon: {
+            name: 'soon',
+            isProminencyRequired: true,
+            isAttentionRequired: false,
+        },
+        attention: {
+            name: 'attention',
+            attentionStyle: true,
+            isProminencyRequired: true,
+            isAttentionRequired: true,
+        },
+        pastDue: {
+            name: 'pastDue',
+            dueStyle: true,
+            isProminencyRequired: true,
+            isAttentionRequired: true,
+        },
+        critical: {
+            name: 'critical',
+            urgentStyle: true,
+            isProminencyRequired: true,
+            isAttentionRequired: true,
+        },
+    }
+
+	const action = new PlugIn.Action(function(selection, sender){
+        const document = selection.document
+        const outline = document.outline
+
+        const doneColumn = outline.columns.byTitle('D')
+        const doneDateColumn = outline.columns.byTitle('Done')
+        const typeColumn = outline.columns.byTitle('Type')
+        const taskColumn = outline.columns.byTitle('Task')
+        const deadlineColumn = outline.columns.byTitle('Deadline')
+        const startColumn = outline.columns.byTitle('Start')
+        const verboseColumn = outline.columns.byTitle('V')
+
+        const now = new Date()
+        const today = startOfDay(now)
+        const tomorrow = startOfDay(addDays(today, 1))
+
+        // TODO: Mon-Fri = till end of this week, Sat-Sun = till end of next week
+        const planningHorizon = startOfDay(addDays(today, 7))
+
+        console.clear()
+        console.log(JSON.stringify({now, today, tomorrow}, null, 2))
+
+        const folderStyle = requireNamedStyle('Heading 2')
+        const urgentStyle = requireNamedStyle('Urgent')
+        const attentionStyle = requireNamedStyle('Attention')
+        const dueStyle = requireNamedStyle('Past Due')
+        const futureStyle = requireNamedStyle('Future')
+        const reviewStyle = requireNamedStyle('Review')
+        const doneStyle = requireNamedStyle('Done')
+
+        var pendingChanges = []
+        var itemsToCollapse = []
+        var itemsToReveal = []
+
+        function processItem(item, mode, isUnderBacklog, backlogItem, atom, isSchedulingCoveredByParent, isNonNextAction) {
+            let title = getStringValue(item, taskColumn)
+            let type = getEnumValue(item, typeColumn)
+            let startDate = item.valueForColumn(startColumn)
+            let deadline = item.valueForColumn(deadlineColumn)
+            let isDone = getCheckboxValue(item, doneColumn)
+            let doneDate = item.valueForColumn(doneDateColumn)
+            let isVerbose = (item.level === 0 || getCheckboxValue(item, verboseColumn))
+
+            let isSchedulingCovered = isSchedulingCoveredByParent
+
+            if (type == null) {
+                if (mode === modes.topLevel) {
+                    type = 'root'
+                } else if (mode === modes.topLevelItem) {
+                    type = 'area'
+                } else if (title != null && title.toUpperCase() === "BACKLOG") {
+                    type = 'backlog'
+                    itemsToCollapse.push(item)
+                } else {
+                    type = 'default'
+                }
+            }
+
+            let behavior = (type == null ? behaviors['default'] : behaviors[type])
+            if (behavior == null) {
+                throw new Error(`unknown Type ${type} in task: ${title}`)
+            }
+
+            if (atom == null && !behavior.isContainer) {
+                atom = item
+            }
+
+            // backlog
+            let backlogItemForChildren = backlogItem
+            if (isBacklogItem(item)) {
+                isUnderBacklog = true
+                backlogItem = item
+            } else if (item.children.length > 0) {
+                item.children.forEach((child) => {
+                    if (isBacklogItem(child)) {
+                        backlogItemForChildren = child
+                        // console.log(`Found backlog child ${getStringValue(child, taskColumn)} under ${title}`)
+                    }
+                })
+            }
+
+            let urgency = null, targetDate = null, redDate = null, criticalDate = null
+
+            if (atom != null && behavior.isSchedulingCovered) {
+                isSchedulingCovered = true
+            }
+
+            if (urgency == null && isDone) {
+                urgency = urgencies.done
+                isSchedulingCovered = true
+            }
+
+            if (urgency == null && atom != null && startDate != null && startDate >= tomorrow) {
+                urgency = urgencies.future
+                isSchedulingCovered = true
+            }
+            if (urgency == null && mode === modes.dailyItem) {
+                urgency = urgencies.normal
+                isSchedulingCovered = true
+            }
+
+            toggleNamedStyle(item, folderStyle, type === 'Folder')
+            toggleNamedStyle(item, doneStyle, isDone)
+            if (isDone && doneDate == null) {
+                item.setValueForColumn(now, doneDateColumn)
+            } else if (!isDone && doneDate != null) {
+                item.setValueForColumn(null, doneDateColumn)
+            }
+
+            let childMode = modes.regular
+            if (title != null && title.toUpperCase() === "DAILY") {
+                childMode = modes.dailyItem
+            } else if (mode === modes.topLevel) {
+                childMode = modes.topLevelItem
+            }
+
+            if (mode === modes.dailyItem) {
+                if (startDate == null || startDate < today) {
+                    item.setValueForColumn(today, startColumn)
+                    startDate = today
+                }
+                if (startDate != null && startDate < today) {
+                    resetChecked(item)
+                }
+                if (type == null) {
+                    setEnumValue(item, typeColumn, 'Today')
+                }
+            } else {
+                if (behavior != null && behavior.isCommitted && startDate == null) {
+                    item.setValueForColumn(today, startColumn)
+                    startDate = today
+                }
+            }
+
+            if (type === 'Today' && deadline == null && startDate != null) {
+                deadline = startOfDay(startDate)
+            }
+
+            if (startDate != null) {
+                let reservedDays
+                if (behavior.isCommitted) {
+                    reservedDays = behavior.reservedDays
+                } else {
+                    reservedDays = 2
+                }
+
+                if (urgency == null && deadline) {
+                    targetDate = startOfDay(addDays(deadline, -reservedDays))
+                    redDate = startOfDay(deadline)
+                    criticalDate = startOfDay(addDays(deadline, 1))
+                    urgency = urgencyFromDates(targetDate, redDate, criticalDate)
+                }
+                if (urgency == null && behavior.isCommitted) {
+                    let dueDate = startOfDay(addDays(startDate, behavior.dueDays))
+                    targetDate = startOfDay(addDays(dueDate, -reservedDays))
+                    redDate = startOfDay(addDays(startDate, behavior.redDays))
+                    criticalDate = startOfDay(addDays(dueDate, behavior.criticalDays))
+                    urgency = urgencyFromDates(targetDate, redDate, criticalDate)
+                }
+            }
+
+            if (urgency == null && targetDate != null && targetDate < planningHorizon) {
+                urgency = urgencies.soon
+            }
+
+            if (urgency == null) {
+                urgency = urgencies.normal
+            }
+
+            toggleNamedStyle(item, futureStyle, urgency.futureStyle)
+            toggleNamedStyle(item, attentionStyle, urgency.attentionStyle)
+            toggleNamedStyle(item, dueStyle, urgency.dueStyle)
+            toggleNamedStyle(item, urgentStyle, urgency.urgentStyle)
+
+            let isAttentionRequiredByDescendants = false
+            let isReviewRequiredByDescendants = false
+            let isProminencyRequiredByDescendants = false
+
+            // *************** CHILDREN ***************
+            if (item.children.length > 0) {
+                let childSchedulingCovered = isSchedulingCovered
+                let isFirstChild = true
+                item.children.forEach((child) => {
+                    let isChildNonNextAction = (atom != null && !isFirstChild)
+                    let rv = processItem(child, childMode, isUnderBacklog, backlogItemForChildren, atom, childSchedulingCovered, isChildNonNextAction)
+                    if (atom != null) {
+                        if (isFirstChild && !isSchedulingCovered && rv.isSchedulingCovered) {
+                            isSchedulingCovered = true
+                        }
+                        childSchedulingCovered = true
+                    }
+                    if (rv.isReviewRequiredInSubtree) {
+                        isReviewRequiredByDescendants = true
+                    }
+                    if (rv.isAttentionRequiredInSubtree) {
+                        isAttentionRequiredByDescendants = true
+                    }
+                    if (rv.isProminencyRequiredInSubtree) {
+                        isProminencyRequiredByDescendants = true
+                    }
+                    isFirstChild = false
+                })
+            }
+
+            let isReviewRequired = false
+            if (atom != null && !isSchedulingCovered) {
+                isReviewRequired = true
+            }
+
+            let isAttentionRequired = (isReviewRequired || urgency.isAttentionRequired)
+            let isAttentionRequiredInSubtree = isAttentionRequired || isAttentionRequiredByDescendants
+            let isProminencyRequired = (urgency.isProminencyRequired || isAttentionRequiredInSubtree)
+
+            let isReviewRequiredInSubtree = isReviewRequired || isReviewRequiredByDescendants
+
+            let isProminencyRequiredInSubtree = isProminencyRequired || isProminencyRequiredByDescendants
+
+            let shouldBeCollapsed = false
+            if (item === atom) {
+                toggleNamedStyle(item, reviewStyle, isReviewRequiredInSubtree)
+
+                let shouldBeInBacklog = !isProminencyRequiredInSubtree
+                if (backlogItem != null) {
+                    if (shouldBeInBacklog && !isUnderBacklog) {
+                        // move to backlog
+                        pendingChanges.push(function() {
+                            console.log(`moving to backlog: ${title}`)
+                            outline.moveItems([item], backlogItem.end)
+                        })
+                    } else if (!shouldBeInBacklog && isUnderBacklog) {
+                        // move out of backlog
+                        pendingChanges.push(function() {
+                            console.log(`moving out of backlog: ${title}`)
+                            outline.moveItems([item], backlogItem.before)
+                        })
+                    }
+                }
+
+                shouldBeCollapsed = (shouldBeInBacklog || !isAttentionRequiredByDescendants)
+            } else {
+                toggleNamedStyle(item, reviewStyle, isReviewRequired)
+
+                if (atom != null) {
+                    let levelInAtom = item.level - atom.level
+                    shouldBeCollapsed = (levelInAtom == 1 && !isAttentionRequiredByDescendants)
+                }
+            }
+
+            if (isAttentionRequired) {
+                itemsToReveal.push(item)
+            } else if (shouldBeCollapsed) {
+                itemsToCollapse.push(atom)
+            }
+
+            let rv = {
+                isSchedulingCovered,
+                isReviewRequiredInSubtree,
+                isAttentionRequiredInSubtree,
+                isProminencyRequiredInSubtree,
+            }
+
+            if (isVerbose) {
+                let itemInfo = {
+                    title, type, mode: mode.name, deadline, startDate,
+                    urgency: urgency.name, targetDate, redDate, criticalDate,
+                    atom: (atom ? (getStringValue(atom, taskColumn) || '<untitled>') : null),
+                    isSchedulingCovered, isSchedulingCoveredByParent,
+                    isReviewRequired, isReviewRequiredByDescendants, isReviewRequiredInSubtree,
+                    isAttentionRequired, isAttentionRequiredByDescendants, isAttentionRequiredInSubtree,
+                    isProminencyRequired, isProminencyRequiredByDescendants, isProminencyRequiredInSubtree,
+                }
+                console.log(JSON.stringify(itemInfo, null, 2))
+                    // console.log(`title = ${title}, type = ${type}, mode = ${mode.name}, deadline = ${deadline}, committedAt = ${startDate},
+                    //  urgency = ${urgency.name}, targetDate = ${targetDate}, redDate = ${redDate}, criticalDate = ${criticalDate},
+                    // atom = ${atom}, isSchedulingCovered = ${isSchedulingCovered}, isSchedulingCoveredByParent = ${isSchedulingCoveredByParent},
+                    //  isReviewRequired = ${isReviewRequired}, rv = ${JSON.stringify(rv)}`)
+            }
+
+            return rv
+        }
+
+        function resetChecked(item) {
+            item.setValueForColumn(State.Unchecked, doneColumn)
+        }
+
+        function requireNamedStyle(name) {
+            const style = outline.namedStyles.byName(name)
+            if (style == null) {
+                throw new Error("Cannot find named style " + name)
+            }
+            return style
+        }
+
+        function addDays(date, n) {
+            return calendar.dateByAddingDateComponents(date, ndays(n))
+        }
+
+        function isBacklogItem(item) {
+            let title = getStringValue(item, taskColumn)
+            return (title != null && title.toUpperCase() === "BACKLOG")
+        }
+
+        function urgencyFromDates(target, red, critical) {
+            if (critical != null && now >= critical) {
+                return urgencies.critical
+            } else if (red != null && now >= red) {
+                return urgencies.pastDue
+            } else if (target != null && now >= target) {
+                return urgencies.attention
+            } else {
+                return null
+            }
+        }
+
+        processItem(outline.rootItem, modes.topLevel, false, null, null, false, false)
+
+        for (let change of pendingChanges) {
+            change()
+        }
+        for (let atom of itemsToCollapse) {
+            for (let editor of document.editors) {
+                let node = editor.nodeForObject(atom)
+                if (node != null && node.isExpanded && node.canCollapse) {
+                    node.collapse()
+                }
+            }
+        }
+        for (let atom of itemsToReveal) {
+            for (let editor of document.editors) {
+                let node = editor.nodeForObject(atom)
+                if (node != null) {
+                    node.reveal()
+                }
+            }
+        }
+	})
+
+	action.validate = function(selection, sender) {
+		return true
+    }
+
+    function startOfDay(date) {
+        let c = calendar.dateComponentsFromDate(date)
+        c.hour = config.startOfDayHour
+        c.minute = 0
+        c.second = 0
+        c.nanosecond = 0
+        let d = calendar.dateFromDateComponents(c)
+        if (d == null) {
+            let c = new DateComponents()
+            c.hours = config.startOfDayHour
+            d = calendar.dateByAddingDateComponents(calendar.startOfDay(date), c)
+        }
+        return d
+    }
+
+    function showErrorAlert(message) {
+        new Alert("GTD Plugin Error", message).show(null)
+    }
+
+    return action
+}();
+_;
+
+function getEnumValue(item, col) {
+    let enumValue = item.valueForColumn(col)
+    if (enumValue) {
+        return enumValue.name
+    } else {
+        return null
+    }
+}
+
+function setEnumValue(item, col, name) {
+    if (name == null) {
+        item.setValueForColumn(null, col)
+    } else {
+        let member = col.enumeration.memberNamed(name)
+        if (member) {
+            item.setValueForColumn(member, col)
+        }
+    }
+}
+
+function getStringValue(item, col) {
+    let value = item.valueForColumn(col)
+    if (value) {
+        return value.string
+    } else {
+        return ''
+    }
+}
+
+function getDateValue(item, col) {
+    let value = item.valueForColumn(col)
+    if (value) {
+        return value
+    } else {
+        return null
+    }
+}
+
+function getCheckboxValue(item, col) {
+    let value = item.valueForColumn(col)
+    if (value) {
+        return value === State.Checked
+    } else {
+        return null
+    }
+}
+
+function toggleNamedStyle(item, namedStyle, apply) {
+    let applied = hasNamedStyle(item, namedStyle)
+    if (applied != apply) {
+        if (apply) {
+            item.style.addNamedStyle(namedStyle)
+        } else {
+            item.style.removeNamedStyle(namedStyle)
+        }
+    }
+}
+
+function hasNamedStyle(item, namedStyle) {
+    for (let ns of item.style.namedStyles) {
+        if (ns === namedStyle) {
+            return true
+        }
+    }
+    return false
+}
+
+function ndays(n) {
+    let c = new DateComponents()
+    c.day = n
+    return c
+}
+
+function isNextAction(atom, item) {
+    if (atom == null) {
+        return false
+    }
+    if (item === atom) {
+        return true
+    }
+    while (item != null && item !== atom) {
+        if (item.index > 0) {
+            return false
+        }
+        item = item.parent
+    }
+    return false
+}
