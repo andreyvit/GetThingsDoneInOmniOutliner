@@ -9,8 +9,6 @@
 	"shortLabel": "GTD"
 }*/
 var _ = function(){
-    let calendar = Calendar.current
-
     const config = {
         // start days at 4am
         startOfDayHour: 4
@@ -187,9 +185,45 @@ var _ = function(){
         обсудить
     `.trim().split(/\s+/)
 
+    class Globals {
+        constructor(outline) {
+            this.outline = outline
+
+            this.calendar = Calendar.current
+
+            this.now = new Date()
+            this.today = this.startOfDay(this.now)
+            this.tomorrow = this.startOfDay(this.addDays(this.today, 1))
+
+            // TODO: Mon-Fri = till end of this week, Sat-Sun = till end of next week
+            this.planningHorizon = this.startOfDay(this.addDays(this.today, 7))
+        }
+
+        addDays(date, n) {
+            return this.calendar.dateByAddingDateComponents(date, ndays(n))
+        }
+
+        startOfDay(date) {
+            let c = this.calendar.dateComponentsFromDate(date)
+            c.hour = config.startOfDayHour
+            c.minute = 0
+            c.second = 0
+            c.nanosecond = 0
+            let d = this.calendar.dateFromDateComponents(c)
+            if (d == null) {
+                let c = new DateComponents()
+                c.hours = config.startOfDayHour
+                d = this.calendar.dateByAddingDateComponents(this.calendar.startOfDay(date), c)
+            }
+            return d
+        }
+    }
+
 	const action = new PlugIn.Action(function(selection, sender){
         const document = selection.document
         const outline = document.outline
+
+        const gs = new Globals(outline)
 
         const doneColumn = outline.columns.byTitle('D')
         const doneDateColumn = outline.columns.byTitle('Done')
@@ -201,15 +235,8 @@ var _ = function(){
         const verboseColumn = outline.columns.byTitle('V')
         const reserveColumn = outline.columns.byTitle('Re')
 
-        const now = new Date()
-        const today = startOfDay(now)
-        const tomorrow = startOfDay(addDays(today, 1))
-
-        // TODO: Mon-Fri = till end of this week, Sat-Sun = till end of next week
-        const planningHorizon = startOfDay(addDays(today, 7))
-
         console.clear()
-        console.log(JSON.stringify({now, today, tomorrow}, null, 2))
+        console.log(JSON.stringify({now: gs.now, today: gs.today, tomorrow: gs.tomorrow}, null, 2))
 
         const folderStyle = requireNamedStyle('Heading 2')
         const urgentStyle = requireNamedStyle('Urgent')
@@ -316,7 +343,7 @@ var _ = function(){
             if (atom != null && (item.behavior.isSchedulingCovered || item.timeframe.isSchedulingCovered)) {
                 isSchedulingCovered = true
             }
-            if (urgency == null && atom != null && item.startDate != null && item.startDate >= tomorrow) {
+            if (urgency == null && atom != null && item.startDate != null && item.startDate >= gs.tomorrow) {
                 urgency = urgencies.future
                 isSchedulingCovered = true
             }
@@ -328,7 +355,7 @@ var _ = function(){
             toggleNamedStyle(item.outlineItem, folderStyle, item.behavior.isStyledAsFolder)
             toggleNamedStyle(item.outlineItem, doneStyle, item.isDone)
             if (item.isDone && item.doneDate == null) {
-                item.outlineItem.setValueForColumn(now, doneDateColumn)
+                item.outlineItem.setValueForColumn(gs.now, doneDateColumn)
             } else if (!item.isDone && item.doneDate != null) {
                 item.outlineItem.setValueForColumn(null, doneDateColumn)
             }
@@ -341,11 +368,11 @@ var _ = function(){
             }
 
             if (mode === modes.dailyItem) {
-                if (item.startDate == null || item.startDate < today) {
-                    item.outlineItem.setValueForColumn(today, startColumn)
-                    item.startDate = today
+                if (item.startDate == null || item.startDate < gs.today) {
+                    item.outlineItem.setValueForColumn(gs.today, startColumn)
+                    item.startDate = gs.today
                 }
-                if (item.startDate != null && item.startDate < today) {
+                if (item.startDate != null && item.startDate < gs.today) {
                     resetChecked(item.outlineItem)
                 }
                 if (item.timeframe === timeframes.unspecified) {
@@ -353,13 +380,13 @@ var _ = function(){
                 }
             } else {
                 if (item.timeframe.isCommitted && item.startDate == null) {
-                    item.outlineItem.setValueForColumn(today, startColumn)
-                    item.startDate = today
+                    item.outlineItem.setValueForColumn(gs.today, startColumn)
+                    item.startDate = gs.today
                 }
             }
 
             if (item.timeframe.shouldDeadlineDefaultToStartDay && item.deadline == null && item.startDate != null) {
-                item.deadline = startOfDay(item.startDate)
+                item.deadline = gs.startOfDay(item.startDate)
             }
 
             if (item.startDate != null) {
@@ -367,21 +394,21 @@ var _ = function(){
 
                 if (urgency == null && item.deadline) {
                     let deadlineReservedDays = (item.reservedDays == null ? defaultReservedDays : item.reservedDays)
-                    targetDate = startOfDay(addDays(item.deadline, -deadlineReservedDays))
-                    redDate = startOfDay(item.deadline)
-                    criticalDate = startOfDay(addDays(item.deadline, 1))
-                    urgency = urgencyFromDates(targetDate, redDate, criticalDate)
+                    targetDate = gs.startOfDay(gs.addDays(item.deadline, -deadlineReservedDays))
+                    redDate = gs.startOfDay(item.deadline)
+                    criticalDate = gs.startOfDay(gs.addDays(item.deadline, 1))
+                    urgency = urgencyFromDates(gs, targetDate, redDate, criticalDate)
                 }
                 if (urgency == null && item.timeframe.isCommitted) {
-                    let dueDate = startOfDay(addDays(item.startDate, item.timeframe.dueDays))
-                    targetDate = startOfDay(addDays(dueDate, -defaultReservedDays))
-                    redDate = startOfDay(addDays(item.startDate, item.timeframe.redDays))
-                    criticalDate = startOfDay(addDays(dueDate, item.timeframe.criticalDays))
-                    urgency = urgencyFromDates(targetDate, redDate, criticalDate)
+                    let dueDate = gs.startOfDay(gs.addDays(item.startDate, item.timeframe.dueDays))
+                    targetDate = gs.startOfDay(gs.addDays(dueDate, -defaultReservedDays))
+                    redDate = gs.startOfDay(gs.addDays(item.startDate, item.timeframe.redDays))
+                    criticalDate = gs.startOfDay(gs.addDays(dueDate, item.timeframe.criticalDays))
+                    urgency = urgencyFromDates(gs, targetDate, redDate, criticalDate)
                 }
             }
 
-            if (urgency == null && targetDate != null && targetDate < planningHorizon) {
+            if (urgency == null && targetDate != null && targetDate < gs.planningHorizon) {
                 urgency = urgencies.soon
             }
 
@@ -505,6 +532,10 @@ var _ = function(){
             return rv
         }
 
+        function executeActions(outlineItem, actions) {
+
+        }
+
         function resetChecked(outlineItem) {
             outlineItem.setValueForColumn(State.Unchecked, doneColumn)
         }
@@ -516,23 +547,6 @@ var _ = function(){
             }
             return style
         }
-
-        function addDays(date, n) {
-            return calendar.dateByAddingDateComponents(date, ndays(n))
-        }
-
-        function urgencyFromDates(target, red, critical) {
-            if (critical != null && now >= critical) {
-                return urgencies.critical
-            } else if (red != null && now >= red) {
-                return urgencies.pastDue
-            } else if (target != null && now >= target) {
-                return urgencies.attention
-            } else {
-                return null
-            }
-        }
-
         function run() {
             let rootItem = loadItem(outline.rootItem)
             let rootContext = {
@@ -570,23 +584,20 @@ var _ = function(){
 		return true
     }
 
-    function startOfDay(date) {
-        let c = calendar.dateComponentsFromDate(date)
-        c.hour = config.startOfDayHour
-        c.minute = 0
-        c.second = 0
-        c.nanosecond = 0
-        let d = calendar.dateFromDateComponents(c)
-        if (d == null) {
-            let c = new DateComponents()
-            c.hours = config.startOfDayHour
-            d = calendar.dateByAddingDateComponents(calendar.startOfDay(date), c)
-        }
-        return d
-    }
-
     function showErrorAlert(message) {
         new Alert("GTD Plugin Error", message).show(null)
+    }
+
+    function urgencyFromDates(gs, target, red, critical) {
+        if (critical != null && gs.now >= critical) {
+            return urgencies.critical
+        } else if (red != null && gs.now >= red) {
+            return urgencies.pastDue
+        } else if (target != null && gs.now >= target) {
+            return urgencies.attention
+        } else {
+            return null
+        }
     }
 
     return action
