@@ -272,8 +272,8 @@ var _ = function(){
             return item
         }
 
-        function processItem(outlineItem, mode, isUnderBacklog, backlogItem, atom, isSchedulingCoveredByParent, isNonNextAction, context) {
-            let item = loadItem(outlineItem)
+        function processItem(item, mode, isUnderBacklog, backlogItem, atom, isSchedulingCoveredByParent, isNonNextAction, context) {
+            let children = item.outlineItem.children.map(loadItem)
 
             item.childrenContext = {...context}
 
@@ -296,12 +296,12 @@ var _ = function(){
 
             // backlog
             let backlogItemForChildren = backlogItem
-            if (isBacklogItem(item.outlineItem)) {
+            if (item.special === specials.backlog) {
                 isUnderBacklog = true
-                backlogItem = item.outlineItem
-            } else if (item.outlineItem.children.length > 0) {
-                item.outlineItem.children.forEach((child) => {
-                    if (isBacklogItem(child)) {
+                backlogItem = item
+            } else if (children.length > 0) {
+                children.forEach((child) => {
+                    if (child.special === specials.backlog) {
                         backlogItemForChildren = child
                         // console.log(`Found backlog child ${getStringValue(child, taskColumn)} under ${item.title}`)
                     }
@@ -405,7 +405,7 @@ var _ = function(){
             if (item.outlineItem.children.length > 0) {
                 let childSchedulingCovered = isSchedulingCovered
                 let isFirstChild = true
-                item.outlineItem.children.forEach((child) => {
+                children.forEach((child) => {
                     let isChildNonNextAction = (atom != null && !isFirstChild)
                     let rv = processItem(child, childMode, isUnderBacklog, backlogItemForChildren, atom, childSchedulingCovered, isChildNonNextAction, item.childrenContext)
                     if (atom != null) {
@@ -450,13 +450,13 @@ var _ = function(){
                         // move to backlog
                         pendingChanges.push(function() {
                             console.log(`moving to backlog: ${item.title}`)
-                            outline.moveItems([item.outlineItem], backlogItem.end)
+                            outline.moveItems([item.outlineItem], backlogItem.outlineItem.end)
                         })
                     } else if (!shouldBeInBacklog && isUnderBacklog) {
                         // move out of backlog
                         pendingChanges.push(function() {
                             console.log(`moving out of backlog: ${item.title}`)
-                            outline.moveItems([item.outlineItem], backlogItem.before)
+                            outline.moveItems([item.outlineItem], backlogItem.outlineItem.before)
                         })
                     }
                 }
@@ -521,11 +521,6 @@ var _ = function(){
             return calendar.dateByAddingDateComponents(date, ndays(n))
         }
 
-        function isBacklogItem(outlineItem) {
-            let title = getStringValue(outlineItem, taskColumn)
-            return (title != null && title.toUpperCase() === "BACKLOG")
-        }
-
         function urgencyFromDates(target, red, critical) {
             if (critical != null && now >= critical) {
                 return urgencies.critical
@@ -538,27 +533,32 @@ var _ = function(){
             }
         }
 
-        processItem(outline.rootItem, modes.topLevel, false, null, null, false, false, {})
+        function run() {
+            let rootItem = loadItem(outline.rootItem)
+            processItem(rootItem, modes.topLevel, false, null, null, false, false, {})
 
-        for (let change of pendingChanges) {
-            change()
-        }
-        for (let outlineItem of itemsToCollapse) {
-            for (let editor of document.editors) {
-                let node = editor.nodeForObject(outlineItem)
-                if (node != null && node.isExpanded && node.canCollapse) {
-                    node.collapse()
+            for (let change of pendingChanges) {
+                change()
+            }
+            for (let outlineItem of itemsToCollapse) {
+                for (let editor of document.editors) {
+                    let node = editor.nodeForObject(outlineItem)
+                    if (node != null && node.isExpanded && node.canCollapse) {
+                        node.collapse()
+                    }
+                }
+            }
+            for (let outlineItem of itemsToReveal) {
+                for (let editor of document.editors) {
+                    let node = editor.nodeForObject(outlineItem)
+                    if (node != null) {
+                        node.reveal()
+                    }
                 }
             }
         }
-        for (let outlineItem of itemsToReveal) {
-            for (let editor of document.editors) {
-                let node = editor.nodeForObject(outlineItem)
-                if (node != null) {
-                    node.reveal()
-                }
-            }
-        }
+
+        run()
 	})
 
 	action.validate = function(selection, sender) {
