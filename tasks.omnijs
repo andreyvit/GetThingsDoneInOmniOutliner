@@ -177,6 +177,12 @@ var _ = function(){
         },
     }
 
+    const specials = {
+        backlog: {
+            name: 'backlog',
+        }
+    }
+
     const actionWords = `
         обсудить
     `.trim().split(/\s+/)
@@ -217,83 +223,101 @@ var _ = function(){
         var itemsToCollapse = []
         var itemsToReveal = []
 
-        function processItem(item, mode, isUnderBacklog, backlogItem, atom, isSchedulingCoveredByParent, isNonNextAction, context) {
-            let title = getStringValue(item, taskColumn)
-            let timeframeChoice = getEnumValue(item, whenColumn)
-            let type = getEnumValue(item, typeColumn)
-            let startDate = item.valueForColumn(startColumn)
-            let deadline = item.valueForColumn(deadlineColumn)
-            let isDone = getCheckboxValue(item, doneColumn)
-            let doneDate = item.valueForColumn(doneDateColumn)
-            let reservedDays = getNumericValue(item, reserveColumn)  // how much time you think this task will take
-            let isVerbose = (item.level === 0 || getCheckboxValue(item, verboseColumn))
+        function loadItem(outlineItem) {
+            let item = {
+                outlineItem,
 
-            let warnings = []
+                typeColumnValue: getEnumValue(outlineItem, typeColumn),
+                title: getStringValue(outlineItem, taskColumn),
+                timeframeColumnValue: getEnumValue(outlineItem, whenColumn),
+                isVerbose: (outlineItem.level === 0 || getCheckboxValue(outlineItem, verboseColumn)),
+                isDone: getCheckboxValue(outlineItem, doneColumn),
+                doneDate: outlineItem.valueForColumn(doneDateColumn),
+
+                startDate: outlineItem.valueForColumn(startColumn),
+                reservedDays: getNumericValue(outlineItem, reserveColumn),  // how much time you think this task will take
+                deadline: outlineItem.valueForColumn(deadlineColumn),
+                timeframe: timeframes.unspecified,
+                behavior: behaviors.default,
+
+                warnings: [],
+
+                special: null,
+            }
+
+            if (item.title != null && item.title.toUpperCase() === "BACKLOG") {
+                item.special = specials.backlog
+            }
+
+            if (item.timeframeColumnValue != null) {
+                if (!timeframes.hasOwnProperty(item.timeframeColumnValue)) {
+                    throw new Error(`unknown When ${item.timeframeColumnValue} in task: ${item.title}`)
+                }
+                item.timeframe = timeframes[item.timeframeColumnValue]
+            }
+
+            if (item.outlineItem.level === 0) {
+                item.behavior = behaviors.root
+            } else if (item.typeColumnValue != null) {
+                if (!behaviors.hasOwnProperty(item.typeColumnValue)) {
+                    throw new Error(`unknown Type ${item.typeColumnValue} in task: ${item.title}`)
+                }
+                item.behavior = behaviors[item.typeColumnValue]
+            } else if (item.outlineItem.level === 1) {
+                item.behavior = behaviors.Area
+            } else if (item.title != null && item.title.toUpperCase() === "BACKLOG") {
+                item.behavior = behaviors.backlog
+            }
+
+            return item
+        }
+
+        function processItem(outlineItem, mode, isUnderBacklog, backlogItem, atom, isSchedulingCoveredByParent, isNonNextAction, context) {
+            let item = loadItem(outlineItem)
+
+            item.childrenContext = {...context}
+
+            if (atom == null && !item.behavior.isContainer) {
+                atom = item.outlineItem
+            }
 
             if (context.deadline) {
-                if (deadline) {
-                    if (deadline > context.deadline) {
-                        warnings.push(`item deadline is later than ancestor's deadline`)
+                if (item.deadline) {
+                    if (item.deadline > context.deadline) {
+                        item.warnings.push(`item item.deadline is later than ancestor's item.deadline`)
                     }
                 } else {
-                    deadline = context.deadline
+                    item.deadline = context.deadline
                 }
             }
 
             let isSchedulingCovered = isSchedulingCoveredByParent
 
-            let childrenContext = {...context}
-
-            let timeframe = timeframes.unspecified
-            if (timeframeChoice != null) {
-                if (!timeframes.hasOwnProperty(timeframeChoice)) {
-                    throw new Error(`unknown When ${timeframeChoice} in task: ${title}`)
-                }
-                timeframe = timeframes[timeframeChoice]
-            }
-
-            let behavior = behaviors.default
-            if (item.level === 0) {
-                behavior = behaviors.root
-            } else if (type != null) {
-                if (!behaviors.hasOwnProperty(type)) {
-                    throw new Error(`unknown Type ${type} in task: ${title}`)
-                }
-                behavior = behaviors[type]
-            } else if (mode === modes.topLevelItem) {
-                behavior = behaviors.Area
-            } else if (title != null && title.toUpperCase() === "BACKLOG") {
-                behavior = behaviors.backlog
-            }
-
-            if (atom == null && !behavior.isContainer) {
-                atom = item
-            }
 
             // backlog
             let backlogItemForChildren = backlogItem
-            if (isBacklogItem(item)) {
+            if (isBacklogItem(item.outlineItem)) {
                 isUnderBacklog = true
-                backlogItem = item
-            } else if (item.children.length > 0) {
-                item.children.forEach((child) => {
+                backlogItem = item.outlineItem
+            } else if (item.outlineItem.children.length > 0) {
+                item.outlineItem.children.forEach((child) => {
                     if (isBacklogItem(child)) {
                         backlogItemForChildren = child
-                        // console.log(`Found backlog child ${getStringValue(child, taskColumn)} under ${title}`)
+                        // console.log(`Found backlog child ${getStringValue(child, taskColumn)} under ${item.title}`)
                     }
                 })
             }
 
             let urgency = null, targetDate = null, redDate = null, criticalDate = null
 
-            if (isDone) {
+            if (item.isDone) {
                 urgency = urgencies.done
                 isSchedulingCovered = true
             }
-            if (atom != null && (behavior.isSchedulingCovered || timeframe.isSchedulingCovered)) {
+            if (atom != null && (item.behavior.isSchedulingCovered || item.timeframe.isSchedulingCovered)) {
                 isSchedulingCovered = true
             }
-            if (urgency == null && atom != null && startDate != null && startDate >= tomorrow) {
+            if (urgency == null && atom != null && item.startDate != null && item.startDate >= tomorrow) {
                 urgency = urgencies.future
                 isSchedulingCovered = true
             }
@@ -302,58 +326,58 @@ var _ = function(){
                 isSchedulingCovered = true
             }
 
-            toggleNamedStyle(item, folderStyle, behavior.isStyledAsFolder)
-            toggleNamedStyle(item, doneStyle, isDone)
-            if (isDone && doneDate == null) {
-                item.setValueForColumn(now, doneDateColumn)
-            } else if (!isDone && doneDate != null) {
-                item.setValueForColumn(null, doneDateColumn)
+            toggleNamedStyle(item.outlineItem, folderStyle, item.behavior.isStyledAsFolder)
+            toggleNamedStyle(item.outlineItem, doneStyle, item.isDone)
+            if (item.isDone && item.doneDate == null) {
+                item.outlineItem.setValueForColumn(now, doneDateColumn)
+            } else if (!item.isDone && item.doneDate != null) {
+                item.outlineItem.setValueForColumn(null, doneDateColumn)
             }
 
             let childMode = modes.regular
-            if (title != null && title.toUpperCase() === "DAILY") {
+            if (item.title != null && item.title.toUpperCase() === "DAILY") {
                 childMode = modes.dailyItem
             } else if (mode === modes.topLevel) {
                 childMode = modes.topLevelItem
             }
 
             if (mode === modes.dailyItem) {
-                if (startDate == null || startDate < today) {
-                    item.setValueForColumn(today, startColumn)
-                    startDate = today
+                if (item.startDate == null || item.startDate < today) {
+                    item.outlineItem.setValueForColumn(today, startColumn)
+                    item.startDate = today
                 }
-                if (startDate != null && startDate < today) {
-                    resetChecked(item)
+                if (item.startDate != null && item.startDate < today) {
+                    resetChecked(item.outlineItem)
                 }
-                if (timeframe === timeframes.unspecified) {
-                    timeframe = timeframes.Today
+                if (item.timeframe === timeframes.unspecified) {
+                    item.timeframe = timeframes.Today
                 }
             } else {
-                if (timeframe.isCommitted && startDate == null) {
-                    item.setValueForColumn(today, startColumn)
-                    startDate = today
+                if (item.timeframe.isCommitted && item.startDate == null) {
+                    item.outlineItem.setValueForColumn(today, startColumn)
+                    item.startDate = today
                 }
             }
 
-            if (timeframe.shouldDeadlineDefaultToStartDay && deadline == null && startDate != null) {
-                deadline = startOfDay(startDate)
+            if (item.timeframe.shouldDeadlineDefaultToStartDay && item.deadline == null && item.startDate != null) {
+                item.deadline = startOfDay(item.startDate)
             }
 
-            if (startDate != null) {
-                let defaultReservedDays = (timeframe.isCommitted ? timeframe.reservedDays : 2)
+            if (item.startDate != null) {
+                let defaultReservedDays = (item.timeframe.isCommitted ? item.timeframe.reservedDays : 2)
 
-                if (urgency == null && deadline) {
-                    let deadlineReservedDays = (reservedDays == null ? defaultReservedDays : reservedDays)
-                    targetDate = startOfDay(addDays(deadline, -deadlineReservedDays))
-                    redDate = startOfDay(deadline)
-                    criticalDate = startOfDay(addDays(deadline, 1))
+                if (urgency == null && item.deadline) {
+                    let deadlineReservedDays = (item.reservedDays == null ? defaultReservedDays : item.reservedDays)
+                    targetDate = startOfDay(addDays(item.deadline, -deadlineReservedDays))
+                    redDate = startOfDay(item.deadline)
+                    criticalDate = startOfDay(addDays(item.deadline, 1))
                     urgency = urgencyFromDates(targetDate, redDate, criticalDate)
                 }
-                if (urgency == null && timeframe.isCommitted) {
-                    let dueDate = startOfDay(addDays(startDate, timeframe.dueDays))
+                if (urgency == null && item.timeframe.isCommitted) {
+                    let dueDate = startOfDay(addDays(item.startDate, item.timeframe.dueDays))
                     targetDate = startOfDay(addDays(dueDate, -defaultReservedDays))
-                    redDate = startOfDay(addDays(startDate, timeframe.redDays))
-                    criticalDate = startOfDay(addDays(dueDate, timeframe.criticalDays))
+                    redDate = startOfDay(addDays(item.startDate, item.timeframe.redDays))
+                    criticalDate = startOfDay(addDays(dueDate, item.timeframe.criticalDays))
                     urgency = urgencyFromDates(targetDate, redDate, criticalDate)
                 }
             }
@@ -366,24 +390,24 @@ var _ = function(){
                 urgency = urgencies.normal
             }
 
-            toggleNamedStyle(item, futureStyle, urgency.futureStyle)
-            toggleNamedStyle(item, attentionStyle, urgency.attentionStyle)
-            toggleNamedStyle(item, dueStyle, urgency.dueStyle)
-            toggleNamedStyle(item, urgentStyle, urgency.urgentStyle)
+            toggleNamedStyle(item.outlineItem, futureStyle, urgency.futureStyle)
+            toggleNamedStyle(item.outlineItem, attentionStyle, urgency.attentionStyle)
+            toggleNamedStyle(item.outlineItem, dueStyle, urgency.dueStyle)
+            toggleNamedStyle(item.outlineItem, urgentStyle, urgency.urgentStyle)
 
             let isAttentionRequiredByDescendants = false
             let isReviewRequiredByDescendants = false
             let isProminencyRequiredByDescendants = false
 
             // *************** CHILDREN ***************
-            childrenContext.deadline = deadline
-            childrenContext.reservedDays = reservedDays
-            if (item.children.length > 0) {
+            item.childrenContext.deadline = item.deadline
+            item.childrenContext.reservedDays = item.reservedDays
+            if (item.outlineItem.children.length > 0) {
                 let childSchedulingCovered = isSchedulingCovered
                 let isFirstChild = true
-                item.children.forEach((child) => {
+                item.outlineItem.children.forEach((child) => {
                     let isChildNonNextAction = (atom != null && !isFirstChild)
-                    let rv = processItem(child, childMode, isUnderBacklog, backlogItemForChildren, atom, childSchedulingCovered, isChildNonNextAction, childrenContext)
+                    let rv = processItem(child, childMode, isUnderBacklog, backlogItemForChildren, atom, childSchedulingCovered, isChildNonNextAction, item.childrenContext)
                     if (atom != null) {
                         if (isFirstChild && !isSchedulingCovered && rv.isSchedulingCovered) {
                             isSchedulingCovered = true
@@ -416,41 +440,41 @@ var _ = function(){
 
             let isProminencyRequiredInSubtree = isProminencyRequired || isProminencyRequiredByDescendants
 
-            let shouldBeCollapsed = !!behavior.shouldBeCollapsed
-            if (item === atom) {
-                toggleNamedStyle(item, reviewStyle, isReviewRequiredInSubtree)
+            let shouldBeCollapsed = !!item.behavior.shouldBeCollapsed
+            if (item.outlineItem === atom) {
+                toggleNamedStyle(item.outlineItem, reviewStyle, isReviewRequiredInSubtree)
 
                 let shouldBeInBacklog = !isProminencyRequiredInSubtree
                 if (backlogItem != null) {
                     if (shouldBeInBacklog && !isUnderBacklog) {
                         // move to backlog
                         pendingChanges.push(function() {
-                            console.log(`moving to backlog: ${title}`)
-                            outline.moveItems([item], backlogItem.end)
+                            console.log(`moving to backlog: ${item.title}`)
+                            outline.moveItems([item.outlineItem], backlogItem.end)
                         })
                     } else if (!shouldBeInBacklog && isUnderBacklog) {
                         // move out of backlog
                         pendingChanges.push(function() {
-                            console.log(`moving out of backlog: ${title}`)
-                            outline.moveItems([item], backlogItem.before)
+                            console.log(`moving out of backlog: ${item.title}`)
+                            outline.moveItems([item.outlineItem], backlogItem.before)
                         })
                     }
                 }
 
                 shouldBeCollapsed = (shouldBeInBacklog || !isAttentionRequiredByDescendants)
             } else {
-                toggleNamedStyle(item, reviewStyle, isReviewRequired)
+                toggleNamedStyle(item.outlineItem, reviewStyle, isReviewRequired)
 
                 if (atom != null) {
-                    let levelInAtom = item.level - atom.level
+                    let levelInAtom = item.outlineItem.level - atom.level
                     shouldBeCollapsed = (levelInAtom == 1 && !isAttentionRequiredByDescendants)
                 }
             }
 
             if (isAttentionRequired) {
-                itemsToReveal.push(item)
+                itemsToReveal.push(item.outlineItem)
             } else if (shouldBeCollapsed) {
-                itemsToCollapse.push(item)
+                itemsToCollapse.push(item.outlineItem)
             }
 
             let rv = {
@@ -460,9 +484,10 @@ var _ = function(){
                 isProminencyRequiredInSubtree,
             }
 
-            if (isVerbose) {
+            if (item.isVerbose) {
                 let itemInfo = {
-                    title, type, mode: mode.name, deadline, startDate,
+                    item,
+                    mode: mode.name,
                     urgency: urgency.name, targetDate, redDate, criticalDate,
                     atom: (atom ? (getStringValue(atom, taskColumn) || '<untitled>') : null),
                     isSchedulingCovered, isSchedulingCoveredByParent,
@@ -471,7 +496,7 @@ var _ = function(){
                     isProminencyRequired, isProminencyRequiredByDescendants, isProminencyRequiredInSubtree,
                 }
                 console.log(JSON.stringify(itemInfo, null, 2))
-                    // console.log(`title = ${title}, type = ${type}, mode = ${mode.name}, deadline = ${deadline}, committedAt = ${startDate},
+                    // console.log(`title = ${item.title}, type = ${item.typeColumnValue}, mode = ${mode.name}, item.deadline = ${item.deadline}, committedAt = ${item.startDate},
                     //  urgency = ${urgency.name}, targetDate = ${targetDate}, redDate = ${redDate}, criticalDate = ${criticalDate},
                     // atom = ${atom}, isSchedulingCovered = ${isSchedulingCovered}, isSchedulingCoveredByParent = ${isSchedulingCoveredByParent},
                     //  isReviewRequired = ${isReviewRequired}, rv = ${JSON.stringify(rv)}`)
@@ -480,8 +505,8 @@ var _ = function(){
             return rv
         }
 
-        function resetChecked(item) {
-            item.setValueForColumn(State.Unchecked, doneColumn)
+        function resetChecked(outlineItem) {
+            outlineItem.setValueForColumn(State.Unchecked, doneColumn)
         }
 
         function requireNamedStyle(name) {
@@ -496,8 +521,8 @@ var _ = function(){
             return calendar.dateByAddingDateComponents(date, ndays(n))
         }
 
-        function isBacklogItem(item) {
-            let title = getStringValue(item, taskColumn)
+        function isBacklogItem(outlineItem) {
+            let title = getStringValue(outlineItem, taskColumn)
             return (title != null && title.toUpperCase() === "BACKLOG")
         }
 
@@ -518,17 +543,17 @@ var _ = function(){
         for (let change of pendingChanges) {
             change()
         }
-        for (let item of itemsToCollapse) {
+        for (let outlineItem of itemsToCollapse) {
             for (let editor of document.editors) {
-                let node = editor.nodeForObject(item)
+                let node = editor.nodeForObject(outlineItem)
                 if (node != null && node.isExpanded && node.canCollapse) {
                     node.collapse()
                 }
             }
         }
-        for (let item of itemsToReveal) {
+        for (let outlineItem of itemsToReveal) {
             for (let editor of document.editors) {
-                let node = editor.nodeForObject(item)
+                let node = editor.nodeForObject(outlineItem)
                 if (node != null) {
                     node.reveal()
                 }
@@ -563,8 +588,8 @@ var _ = function(){
 }();
 _;
 
-function getEnumValue(item, col) {
-    let enumValue = item.valueForColumn(col)
+function getEnumValue(outlineItem, col) {
+    let enumValue = outlineItem.valueForColumn(col)
     if (enumValue) {
         return enumValue.name
     } else {
@@ -572,19 +597,19 @@ function getEnumValue(item, col) {
     }
 }
 
-function setEnumValue(item, col, name) {
+function setEnumValue(outlineItem, col, name) {
     if (name == null) {
-        item.setValueForColumn(null, col)
+        outlineItem.setValueForColumn(null, col)
     } else {
         let member = col.enumeration.memberNamed(name)
         if (member) {
-            item.setValueForColumn(member, col)
+            outlineItem.setValueForColumn(member, col)
         }
     }
 }
 
-function getStringValue(item, col) {
-    let value = item.valueForColumn(col)
+function getStringValue(outlineItem, col) {
+    let value = outlineItem.valueForColumn(col)
     if (value) {
         return value.string
     } else {
@@ -592,8 +617,8 @@ function getStringValue(item, col) {
     }
 }
 
-function getNumericValue(item, col) {
-    let value = item.valueForColumn(col)
+function getNumericValue(outlineItem, col) {
+    let value = outlineItem.valueForColumn(col)
     if (value) {
         return +(value.toString())
     } else {
@@ -601,8 +626,8 @@ function getNumericValue(item, col) {
     }
 }
 
-function getCheckboxValue(item, col) {
-    let value = item.valueForColumn(col)
+function getCheckboxValue(outlineItem, col) {
+    let value = outlineItem.valueForColumn(col)
     if (value) {
         return value === State.Checked
     } else {
@@ -610,19 +635,19 @@ function getCheckboxValue(item, col) {
     }
 }
 
-function toggleNamedStyle(item, namedStyle, apply) {
-    let applied = hasNamedStyle(item, namedStyle)
+function toggleNamedStyle(outlineItem, namedStyle, apply) {
+    let applied = hasNamedStyle(outlineItem, namedStyle)
     if (applied != apply) {
         if (apply) {
-            item.style.addNamedStyle(namedStyle)
+            outlineItem.style.addNamedStyle(namedStyle)
         } else {
-            item.style.removeNamedStyle(namedStyle)
+            outlineItem.style.removeNamedStyle(namedStyle)
         }
     }
 }
 
-function hasNamedStyle(item, namedStyle) {
-    for (let ns of item.style.namedStyles) {
+function hasNamedStyle(outlineItem, namedStyle) {
+    for (let ns of outlineItem.style.namedStyles) {
         if (ns === namedStyle) {
             return true
         }
@@ -636,18 +661,18 @@ function ndays(n) {
     return c
 }
 
-function isNextAction(atom, item) {
+function isNextAction(atom, outlineItem) {
     if (atom == null) {
         return false
     }
-    if (item === atom) {
+    if (outlineItem === atom) {
         return true
     }
-    while (item != null && item !== atom) {
-        if (item.index > 0) {
+    while (outlineItem != null && outlineItem !== atom) {
+        if (outlineItem.index > 0) {
             return false
         }
-        item = item.parent
+        outlineItem = outlineItem.parent
     }
     return false
 }
