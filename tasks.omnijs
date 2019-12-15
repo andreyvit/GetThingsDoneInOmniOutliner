@@ -189,12 +189,12 @@ var _ = function(){
     `.trim().split(/\s+/)
 
     class Globals {
-        constructor(outline) {
+        constructor(outline, now) {
             this.outline = outline
 
             this.calendar = Calendar.current
 
-            this.now = new Date()
+            this.now = now
             this.today = this.startOfDay(this.now)
             this.tomorrow = this.startOfDay(this.addDays(this.today, 1))
 
@@ -226,7 +226,7 @@ var _ = function(){
         const document = selection.document
         const outline = document.outline
 
-        const gs = new Globals(outline)
+        const gs = new Globals(outline, new Date())
 
         const doneColumn = outline.columns.byTitle('D')
         const doneDateColumn = outline.columns.byTitle('Done')
@@ -316,18 +316,16 @@ var _ = function(){
                 atom = item
             }
 
+            // deadline
             if (context.deadline) {
                 if (item.deadline) {
                     if (item.deadline > context.deadline) {
-                        item.warnings.push(`item item.deadline is later than ancestor's item.deadline`)
+                        item.warnings.push(`item deadline is later than ancestor's deadline`)
                     }
                 } else {
                     item.deadline = context.deadline
                 }
             }
-
-            let isSchedulingCovered = context.isSchedulingCovered
-
 
             // backlog
             if (item.special === specials.backlog) {
@@ -341,6 +339,8 @@ var _ = function(){
                     }
                 })
             }
+
+            let isSchedulingCovered = context.isSchedulingCovered
 
             let urgency = null, targetDate = null, redDate = null, criticalDate = null
 
@@ -358,18 +358,6 @@ var _ = function(){
             if (urgency == null && context.isUnderDailyChecklist) {
                 urgency = urgencies.normal
                 isSchedulingCovered = true
-            }
-
-            toggleNamedStyle(item.outlineItem, folderStyle, item.behavior.isStyledAsFolder)
-            toggleNamedStyle(item.outlineItem, doneStyle, item.isDone)
-            if (item.isDone && item.doneDate == null) {
-                item.outlineItem.setValueForColumn(gs.now, doneDateColumn)
-            } else if (!item.isDone && item.doneDate != null) {
-                item.outlineItem.setValueForColumn(null, doneDateColumn)
-            }
-
-            if (item.special === specials.daily) {
-                childrenContext.isUnderDailyChecklist = true
             }
 
             if (context.isUnderDailyChecklist) {
@@ -421,10 +409,11 @@ var _ = function(){
                 urgency = urgencies.normal
             }
 
-            toggleNamedStyle(item.outlineItem, futureStyle, urgency.futureStyle)
-            toggleNamedStyle(item.outlineItem, attentionStyle, urgency.attentionStyle)
-            toggleNamedStyle(item.outlineItem, dueStyle, urgency.dueStyle)
-            toggleNamedStyle(item.outlineItem, urgentStyle, urgency.urgentStyle)
+            if (item.isDone && item.doneDate == null) {
+                item.outlineItem.setValueForColumn(gs.now, doneDateColumn)
+            } else if (!item.isDone && item.doneDate != null) {
+                item.outlineItem.setValueForColumn(null, doneDateColumn)
+            }
 
             let isAttentionRequiredByDescendants = false
             let isReviewRequiredByDescendants = false
@@ -434,6 +423,9 @@ var _ = function(){
             childrenContext.deadline = item.deadline
             childrenContext.reservedDays = item.reservedDays
             childrenContext.isSchedulingCovered = isSchedulingCovered
+            if (item.special === specials.daily) {
+                childrenContext.isUnderDailyChecklist = true
+            }
             if (item.outlineItem.children.length > 0) {
                 let isFirstChild = true
                 children.forEach((child) => {
@@ -472,9 +464,10 @@ var _ = function(){
             let isProminencyRequiredInSubtree = isProminencyRequired || isProminencyRequiredByDescendants
 
             let shouldBeCollapsed = !!item.behavior.shouldBeCollapsed
-            if (item === atom) {
-                toggleNamedStyle(item.outlineItem, reviewStyle, isReviewRequiredInSubtree)
 
+            let isMarkedAsRequiringReview = isReviewRequired || ((item === atom) && isReviewRequiredByDescendants)
+
+            if (item === atom) {
                 let shouldBeInBacklog = !isProminencyRequiredInSubtree
                 if (context.backlogItem != null) {
                     if (shouldBeInBacklog && !context.isUnderBacklog) {
@@ -494,13 +487,19 @@ var _ = function(){
 
                 shouldBeCollapsed = (shouldBeInBacklog || !isAttentionRequiredByDescendants)
             } else {
-                toggleNamedStyle(item.outlineItem, reviewStyle, isReviewRequired)
-
                 if (atom != null) {
                     let levelInAtom = item.outlineItem.level - atom.outlineItem.level
                     shouldBeCollapsed = (levelInAtom == 1 && !isAttentionRequiredByDescendants)
                 }
             }
+
+            toggleNamedStyle(item.outlineItem, reviewStyle, isMarkedAsRequiringReview)
+            toggleNamedStyle(item.outlineItem, folderStyle, item.behavior.isStyledAsFolder)
+            toggleNamedStyle(item.outlineItem, doneStyle, item.isDone)
+            toggleNamedStyle(item.outlineItem, futureStyle, urgency.futureStyle)
+            toggleNamedStyle(item.outlineItem, attentionStyle, urgency.attentionStyle)
+            toggleNamedStyle(item.outlineItem, dueStyle, urgency.dueStyle)
+            toggleNamedStyle(item.outlineItem, urgentStyle, urgency.urgentStyle)
 
             if (isAttentionRequired) {
                 itemsToReveal.push(item.outlineItem)
