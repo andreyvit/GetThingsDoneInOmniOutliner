@@ -272,10 +272,10 @@ var _ = function(){
             return item
         }
 
-        function processItem(item, mode, isUnderBacklog, backlogItem, atom, isSchedulingCoveredByParent, isNonNextAction, context) {
+        function processItem(item, mode, atom, context) {
             let children = item.outlineItem.children.map(loadItem)
 
-            item.childrenContext = {...context}
+            let childrenContext = {...context}
 
             if (atom == null && !item.behavior.isContainer) {
                 atom = item
@@ -291,18 +291,17 @@ var _ = function(){
                 }
             }
 
-            let isSchedulingCovered = isSchedulingCoveredByParent
+            let isSchedulingCovered = context.isSchedulingCovered
 
 
             // backlog
-            let backlogItemForChildren = backlogItem
             if (item.special === specials.backlog) {
-                isUnderBacklog = true
-                backlogItem = item
+                childrenContext.isUnderBacklog = true
+                childrenContext.backlogItem = item
             } else if (children.length > 0) {
                 children.forEach((child) => {
                     if (child.special === specials.backlog) {
-                        backlogItemForChildren = child
+                        childrenContext.backlogItem = child
                         // console.log(`Found backlog child ${getStringValue(child, taskColumn)} under ${item.title}`)
                     }
                 })
@@ -400,19 +399,19 @@ var _ = function(){
             let isProminencyRequiredByDescendants = false
 
             // *************** CHILDREN ***************
-            item.childrenContext.deadline = item.deadline
-            item.childrenContext.reservedDays = item.reservedDays
+            childrenContext.deadline = item.deadline
+            childrenContext.reservedDays = item.reservedDays
+            childrenContext.isSchedulingCovered = isSchedulingCovered
             if (item.outlineItem.children.length > 0) {
-                let childSchedulingCovered = isSchedulingCovered
                 let isFirstChild = true
                 children.forEach((child) => {
                     let isChildNonNextAction = (atom != null && !isFirstChild)
-                    let rv = processItem(child, childMode, isUnderBacklog, backlogItemForChildren, atom, childSchedulingCovered, isChildNonNextAction, item.childrenContext)
+                    let rv = processItem(child, childMode, atom, childrenContext)
                     if (atom != null) {
                         if (isFirstChild && !isSchedulingCovered && rv.isSchedulingCovered) {
                             isSchedulingCovered = true
                         }
-                        childSchedulingCovered = true
+                        childrenContext.isSchedulingCovered = true
                     }
                     if (rv.isReviewRequiredInSubtree) {
                         isReviewRequiredByDescendants = true
@@ -445,18 +444,18 @@ var _ = function(){
                 toggleNamedStyle(item.outlineItem, reviewStyle, isReviewRequiredInSubtree)
 
                 let shouldBeInBacklog = !isProminencyRequiredInSubtree
-                if (backlogItem != null) {
-                    if (shouldBeInBacklog && !isUnderBacklog) {
+                if (context.backlogItem != null) {
+                    if (shouldBeInBacklog && !context.isUnderBacklog) {
                         // move to backlog
                         pendingChanges.push(function() {
                             console.log(`moving to backlog: ${item.title}`)
-                            outline.moveItems([item.outlineItem], backlogItem.outlineItem.end)
+                            outline.moveItems([item.outlineItem], context.backlogItem.outlineItem.end)
                         })
-                    } else if (!shouldBeInBacklog && isUnderBacklog) {
+                    } else if (!shouldBeInBacklog && context.isUnderBacklog) {
                         // move out of backlog
                         pendingChanges.push(function() {
                             console.log(`moving out of backlog: ${item.title}`)
-                            outline.moveItems([item.outlineItem], backlogItem.outlineItem.before)
+                            outline.moveItems([item.outlineItem], context.backlogItem.outlineItem.before)
                         })
                     }
                 }
@@ -487,10 +486,11 @@ var _ = function(){
             if (item.isVerbose) {
                 let itemInfo = {
                     item,
+                    context,
                     mode: mode.name,
                     urgency: urgency.name, targetDate, redDate, criticalDate,
                     atom: (atom ? (atom.title || '<untitled>') : null),
-                    isSchedulingCovered, isSchedulingCoveredByParent,
+                    isSchedulingCovered,
                     isReviewRequired, isReviewRequiredByDescendants, isReviewRequiredInSubtree,
                     isAttentionRequired, isAttentionRequiredByDescendants, isAttentionRequiredInSubtree,
                     isProminencyRequired, isProminencyRequiredByDescendants, isProminencyRequiredInSubtree,
@@ -498,7 +498,7 @@ var _ = function(){
                 console.log(JSON.stringify(itemInfo, null, 2))
                     // console.log(`title = ${item.title}, type = ${item.typeColumnValue}, mode = ${mode.name}, item.deadline = ${item.deadline}, committedAt = ${item.startDate},
                     //  urgency = ${urgency.name}, targetDate = ${targetDate}, redDate = ${redDate}, criticalDate = ${criticalDate},
-                    // atom = ${atom}, isSchedulingCovered = ${isSchedulingCovered}, isSchedulingCoveredByParent = ${isSchedulingCoveredByParent},
+                    // atom = ${atom}, isSchedulingCovered = ${isSchedulingCovered},
                     //  isReviewRequired = ${isReviewRequired}, rv = ${JSON.stringify(rv)}`)
             }
 
@@ -535,7 +535,12 @@ var _ = function(){
 
         function run() {
             let rootItem = loadItem(outline.rootItem)
-            processItem(rootItem, modes.topLevel, false, null, null, false, false, {})
+            let rootContext = {
+                isSchedulingCovered: false,
+                isUnderBacklog: false,
+                backlogItem: null,
+            }
+            processItem(rootItem, modes.topLevel, null, rootContext)
 
             for (let change of pendingChanges) {
                 change()
