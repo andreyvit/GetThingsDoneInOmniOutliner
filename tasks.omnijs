@@ -278,7 +278,7 @@ var _ = function(){
             item.childrenContext = {...context}
 
             if (atom == null && !item.behavior.isContainer) {
-                atom = item.outlineItem
+                atom = item
             }
 
             if (context.deadline) {
@@ -441,7 +441,7 @@ var _ = function(){
             let isProminencyRequiredInSubtree = isProminencyRequired || isProminencyRequiredByDescendants
 
             let shouldBeCollapsed = !!item.behavior.shouldBeCollapsed
-            if (item.outlineItem === atom) {
+            if (item === atom) {
                 toggleNamedStyle(item.outlineItem, reviewStyle, isReviewRequiredInSubtree)
 
                 let shouldBeInBacklog = !isProminencyRequiredInSubtree
@@ -466,7 +466,7 @@ var _ = function(){
                 toggleNamedStyle(item.outlineItem, reviewStyle, isReviewRequired)
 
                 if (atom != null) {
-                    let levelInAtom = item.outlineItem.level - atom.level
+                    let levelInAtom = item.outlineItem.level - atom.outlineItem.level
                     shouldBeCollapsed = (levelInAtom == 1 && !isAttentionRequiredByDescendants)
                 }
             }
@@ -489,7 +489,7 @@ var _ = function(){
                     item,
                     mode: mode.name,
                     urgency: urgency.name, targetDate, redDate, criticalDate,
-                    atom: (atom ? (getStringValue(atom, taskColumn) || '<untitled>') : null),
+                    atom: (atom ? (atom.title || '<untitled>') : null),
                     isSchedulingCovered, isSchedulingCoveredByParent,
                     isReviewRequired, isReviewRequiredByDescendants, isReviewRequiredInSubtree,
                     isAttentionRequired, isAttentionRequiredByDescendants, isAttentionRequiredInSubtree,
@@ -659,22 +659,6 @@ function ndays(n) {
     let c = new DateComponents()
     c.day = n
     return c
-}
-
-function isNextAction(atom, outlineItem) {
-    if (atom == null) {
-        return false
-    }
-    if (outlineItem === atom) {
-        return true
-    }
-    while (outlineItem != null && outlineItem !== atom) {
-        if (outlineItem.index > 0) {
-            return false
-        }
-        outlineItem = outlineItem.parent
-    }
-    return false
 }
 
 function minDate(a, b) {
