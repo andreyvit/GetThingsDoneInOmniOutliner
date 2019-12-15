@@ -178,7 +178,10 @@ var _ = function(){
     const specials = {
         backlog: {
             name: 'backlog',
-        }
+        },
+        daily: {
+            name: 'daily',
+        },
     }
 
     const actionWords = `
@@ -272,8 +275,13 @@ var _ = function(){
                 special: null,
             }
 
-            if (item.title != null && item.title.toUpperCase() === "BACKLOG") {
-                item.special = specials.backlog
+            if (item.title != null) {
+                let title = item.title.toUpperCase()
+                if (title === "BACKLOG") {
+                    item.special = specials.backlog
+                } else if (title === "DAILY") {
+                    item.special = specials.daily
+                }
             }
 
             if (item.timeframeColumnValue != null) {
@@ -299,7 +307,7 @@ var _ = function(){
             return item
         }
 
-        function processItem(item, mode, atom, context) {
+        function processItem(item, atom, context) {
             let children = item.outlineItem.children.map(loadItem)
 
             let childrenContext = {...context}
@@ -347,7 +355,7 @@ var _ = function(){
                 urgency = urgencies.future
                 isSchedulingCovered = true
             }
-            if (urgency == null && mode === modes.dailyItem) {
+            if (urgency == null && context.isUnderDailyChecklist) {
                 urgency = urgencies.normal
                 isSchedulingCovered = true
             }
@@ -360,14 +368,11 @@ var _ = function(){
                 item.outlineItem.setValueForColumn(null, doneDateColumn)
             }
 
-            let childMode = modes.regular
-            if (item.title != null && item.title.toUpperCase() === "DAILY") {
-                childMode = modes.dailyItem
-            } else if (mode === modes.topLevel) {
-                childMode = modes.topLevelItem
+            if (item.special === specials.daily) {
+                childrenContext.isUnderDailyChecklist = true
             }
 
-            if (mode === modes.dailyItem) {
+            if (context.isUnderDailyChecklist) {
                 if (item.startDate == null || item.startDate < gs.today) {
                     item.outlineItem.setValueForColumn(gs.today, startColumn)
                     item.startDate = gs.today
@@ -433,7 +438,7 @@ var _ = function(){
                 let isFirstChild = true
                 children.forEach((child) => {
                     let isChildNonNextAction = (atom != null && !isFirstChild)
-                    let rv = processItem(child, childMode, atom, childrenContext)
+                    let rv = processItem(child, atom, childrenContext)
                     if (atom != null) {
                         if (isFirstChild && !isSchedulingCovered && rv.isSchedulingCovered) {
                             isSchedulingCovered = true
@@ -514,7 +519,6 @@ var _ = function(){
                 let itemInfo = {
                     item,
                     context,
-                    mode: mode.name,
                     urgency: urgency.name, targetDate, redDate, criticalDate,
                     atom: (atom ? (atom.title || '<untitled>') : null),
                     isSchedulingCovered,
@@ -552,9 +556,10 @@ var _ = function(){
             let rootContext = {
                 isSchedulingCovered: false,
                 isUnderBacklog: false,
+                isUnderDailyChecklist: false,
                 backlogItem: null,
             }
-            processItem(rootItem, modes.topLevel, null, rootContext)
+            processItem(rootItem, null, rootContext)
 
             for (let change of pendingChanges) {
                 change()
