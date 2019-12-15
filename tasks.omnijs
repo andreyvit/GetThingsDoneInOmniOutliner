@@ -16,29 +16,15 @@ var _ = function(){
         startOfDayHour: 4
     }
 
-    const behaviors = {
-        'default': {
-            isCommitted: false
-        },
-        'root': {
+    const timeframes = {
+        'unspecified': {
             isCommitted: false,
-            isContainer: true,
-        },
-        'area': {
-            isCommitted: false,
-            isContainer: true,
-        },
-        'backlog': {
-            isCommitted: false,
-            isContainer: true,
-        },
-        'Inbox': {
-            isCommitted: false,
-            isContainer: true,
+            isSchedulingCovered: false,
         },
         'Today': {
             isCommitted: false,
             isSchedulingCovered: true,
+            shouldDeadlineDefaultToStartDay: true,
         },
         'Day': {
             isCommitted: true,
@@ -48,7 +34,7 @@ var _ = function(){
             redDays: 2,
             criticalDays: 4,
         },
-        '2-3 Days': {
+        'Days': {
             isCommitted: true,
             isSchedulingCovered: true,
             dueDays: 2,
@@ -88,21 +74,49 @@ var _ = function(){
             redDays: Math.floor(365 * 1.5),
             criticalDays: Math.floor(365 * 2),
         },
+    }
+
+    const behaviors = {
+        'default': {
+            name: 'default',
+        },
+        'root': {
+            name: 'root',
+            isContainer: true,
+        },
+        'Area': {
+            name: 'Area',
+            isContainer: true,
+        },
+        'backlog': {
+            name: 'backlog',
+            isContainer: true,
+            shouldBeCollapsed: true,
+        },
+        'Inbox': {
+            name: 'Inbox',
+            isContainer: true,
+        },
         'Idea': {
-            isCommitted: false,
+            name: 'Idea',
             isSchedulingCovered: true,
         },
         'Blocked': {
-            isCommitted: false,
+            name: 'Blocked',
             isSchedulingCovered: true,
         },
         'Waiting For': {
-            isCommitted: false,
+            name: 'Waiting For',
             isSchedulingCovered: true,
         },
         'Folder': {
-            isCommitted: false,
+            name: 'Folder',
             isContainer: false,
+            isStyledAsFolder: true,
+        },
+        'Elephant': {
+            name: 'Elephant',
+            isContainer: true,
         },
     }
 
@@ -163,6 +177,10 @@ var _ = function(){
         },
     }
 
+    const actionWords = `
+        обсудить
+    `.trim().split(/\s+/)
+
 	const action = new PlugIn.Action(function(selection, sender){
         const document = selection.document
         const outline = document.outline
@@ -170,10 +188,12 @@ var _ = function(){
         const doneColumn = outline.columns.byTitle('D')
         const doneDateColumn = outline.columns.byTitle('Done')
         const typeColumn = outline.columns.byTitle('Type')
+        const whenColumn = outline.columns.byTitle('When')
         const taskColumn = outline.columns.byTitle('Task')
         const deadlineColumn = outline.columns.byTitle('Deadline')
         const startColumn = outline.columns.byTitle('Start')
         const verboseColumn = outline.columns.byTitle('V')
+        const reserveColumn = outline.columns.byTitle('Re')
 
         const now = new Date()
         const today = startOfDay(now)
@@ -197,33 +217,53 @@ var _ = function(){
         var itemsToCollapse = []
         var itemsToReveal = []
 
-        function processItem(item, mode, isUnderBacklog, backlogItem, atom, isSchedulingCoveredByParent, isNonNextAction) {
+        function processItem(item, mode, isUnderBacklog, backlogItem, atom, isSchedulingCoveredByParent, isNonNextAction, context) {
             let title = getStringValue(item, taskColumn)
+            let timeframeChoice = getEnumValue(item, whenColumn)
             let type = getEnumValue(item, typeColumn)
             let startDate = item.valueForColumn(startColumn)
             let deadline = item.valueForColumn(deadlineColumn)
             let isDone = getCheckboxValue(item, doneColumn)
             let doneDate = item.valueForColumn(doneDateColumn)
+            let reservedDays = getNumericValue(item, reserveColumn)  // how much time you think this task will take
             let isVerbose = (item.level === 0 || getCheckboxValue(item, verboseColumn))
 
-            let isSchedulingCovered = isSchedulingCoveredByParent
+            let warnings = []
 
-            if (type == null) {
-                if (mode === modes.topLevel) {
-                    type = 'root'
-                } else if (mode === modes.topLevelItem) {
-                    type = 'area'
-                } else if (title != null && title.toUpperCase() === "BACKLOG") {
-                    type = 'backlog'
-                    itemsToCollapse.push(item)
+            if (context.deadline) {
+                if (deadline) {
+                    if (deadline > context.deadline) {
+                        warnings.push(`item deadline is later than ancestor's deadline`)
+                    }
                 } else {
-                    type = 'default'
+                    deadline = context.deadline
                 }
             }
 
-            let behavior = (type == null ? behaviors['default'] : behaviors[type])
-            if (behavior == null) {
-                throw new Error(`unknown Type ${type} in task: ${title}`)
+            let isSchedulingCovered = isSchedulingCoveredByParent
+
+            let childrenContext = {...context}
+
+            let timeframe = timeframes.unspecified
+            if (timeframeChoice != null) {
+                if (!timeframes.hasOwnProperty(timeframeChoice)) {
+                    throw new Error(`unknown When ${timeframeChoice} in task: ${title}`)
+                }
+                timeframe = timeframes[timeframeChoice]
+            }
+
+            let behavior = behaviors.default
+            if (item.level === 0) {
+                behavior = behaviors.root
+            } else if (type != null) {
+                if (!behaviors.hasOwnProperty(type)) {
+                    throw new Error(`unknown Type ${type} in task: ${title}`)
+                }
+                behavior = behaviors[type]
+            } else if (mode === modes.topLevelItem) {
+                behavior = behaviors.Area
+            } else if (title != null && title.toUpperCase() === "BACKLOG") {
+                behavior = behaviors.backlog
             }
 
             if (atom == null && !behavior.isContainer) {
@@ -246,15 +286,13 @@ var _ = function(){
 
             let urgency = null, targetDate = null, redDate = null, criticalDate = null
 
-            if (atom != null && behavior.isSchedulingCovered) {
-                isSchedulingCovered = true
-            }
-
-            if (urgency == null && isDone) {
+            if (isDone) {
                 urgency = urgencies.done
                 isSchedulingCovered = true
             }
-
+            if (atom != null && (behavior.isSchedulingCovered || timeframe.isSchedulingCovered)) {
+                isSchedulingCovered = true
+            }
             if (urgency == null && atom != null && startDate != null && startDate >= tomorrow) {
                 urgency = urgencies.future
                 isSchedulingCovered = true
@@ -264,7 +302,7 @@ var _ = function(){
                 isSchedulingCovered = true
             }
 
-            toggleNamedStyle(item, folderStyle, type === 'Folder')
+            toggleNamedStyle(item, folderStyle, behavior.isStyledAsFolder)
             toggleNamedStyle(item, doneStyle, isDone)
             if (isDone && doneDate == null) {
                 item.setValueForColumn(now, doneDateColumn)
@@ -287,39 +325,35 @@ var _ = function(){
                 if (startDate != null && startDate < today) {
                     resetChecked(item)
                 }
-                if (type == null) {
-                    setEnumValue(item, typeColumn, 'Today')
+                if (timeframe === timeframes.unspecified) {
+                    timeframe = timeframes.Today
                 }
             } else {
-                if (behavior != null && behavior.isCommitted && startDate == null) {
+                if (timeframe.isCommitted && startDate == null) {
                     item.setValueForColumn(today, startColumn)
                     startDate = today
                 }
             }
 
-            if (type === 'Today' && deadline == null && startDate != null) {
+            if (timeframe.shouldDeadlineDefaultToStartDay && deadline == null && startDate != null) {
                 deadline = startOfDay(startDate)
             }
 
             if (startDate != null) {
-                let reservedDays
-                if (behavior.isCommitted) {
-                    reservedDays = behavior.reservedDays
-                } else {
-                    reservedDays = 2
-                }
+                let defaultReservedDays = (timeframe.isCommitted ? timeframe.reservedDays : 2)
 
                 if (urgency == null && deadline) {
-                    targetDate = startOfDay(addDays(deadline, -reservedDays))
+                    let deadlineReservedDays = (reservedDays == null ? defaultReservedDays : reservedDays)
+                    targetDate = startOfDay(addDays(deadline, -deadlineReservedDays))
                     redDate = startOfDay(deadline)
                     criticalDate = startOfDay(addDays(deadline, 1))
                     urgency = urgencyFromDates(targetDate, redDate, criticalDate)
                 }
-                if (urgency == null && behavior.isCommitted) {
-                    let dueDate = startOfDay(addDays(startDate, behavior.dueDays))
-                    targetDate = startOfDay(addDays(dueDate, -reservedDays))
-                    redDate = startOfDay(addDays(startDate, behavior.redDays))
-                    criticalDate = startOfDay(addDays(dueDate, behavior.criticalDays))
+                if (urgency == null && timeframe.isCommitted) {
+                    let dueDate = startOfDay(addDays(startDate, timeframe.dueDays))
+                    targetDate = startOfDay(addDays(dueDate, -defaultReservedDays))
+                    redDate = startOfDay(addDays(startDate, timeframe.redDays))
+                    criticalDate = startOfDay(addDays(dueDate, timeframe.criticalDays))
                     urgency = urgencyFromDates(targetDate, redDate, criticalDate)
                 }
             }
@@ -342,12 +376,14 @@ var _ = function(){
             let isProminencyRequiredByDescendants = false
 
             // *************** CHILDREN ***************
+            childrenContext.deadline = deadline
+            childrenContext.reservedDays = reservedDays
             if (item.children.length > 0) {
                 let childSchedulingCovered = isSchedulingCovered
                 let isFirstChild = true
                 item.children.forEach((child) => {
                     let isChildNonNextAction = (atom != null && !isFirstChild)
-                    let rv = processItem(child, childMode, isUnderBacklog, backlogItemForChildren, atom, childSchedulingCovered, isChildNonNextAction)
+                    let rv = processItem(child, childMode, isUnderBacklog, backlogItemForChildren, atom, childSchedulingCovered, isChildNonNextAction, childrenContext)
                     if (atom != null) {
                         if (isFirstChild && !isSchedulingCovered && rv.isSchedulingCovered) {
                             isSchedulingCovered = true
@@ -380,7 +416,7 @@ var _ = function(){
 
             let isProminencyRequiredInSubtree = isProminencyRequired || isProminencyRequiredByDescendants
 
-            let shouldBeCollapsed = false
+            let shouldBeCollapsed = !!behavior.shouldBeCollapsed
             if (item === atom) {
                 toggleNamedStyle(item, reviewStyle, isReviewRequiredInSubtree)
 
@@ -414,7 +450,7 @@ var _ = function(){
             if (isAttentionRequired) {
                 itemsToReveal.push(item)
             } else if (shouldBeCollapsed) {
-                itemsToCollapse.push(atom)
+                itemsToCollapse.push(item)
             }
 
             let rv = {
@@ -477,22 +513,22 @@ var _ = function(){
             }
         }
 
-        processItem(outline.rootItem, modes.topLevel, false, null, null, false, false)
+        processItem(outline.rootItem, modes.topLevel, false, null, null, false, false, {})
 
         for (let change of pendingChanges) {
             change()
         }
-        for (let atom of itemsToCollapse) {
+        for (let item of itemsToCollapse) {
             for (let editor of document.editors) {
-                let node = editor.nodeForObject(atom)
+                let node = editor.nodeForObject(item)
                 if (node != null && node.isExpanded && node.canCollapse) {
                     node.collapse()
                 }
             }
         }
-        for (let atom of itemsToReveal) {
+        for (let item of itemsToReveal) {
             for (let editor of document.editors) {
-                let node = editor.nodeForObject(atom)
+                let node = editor.nodeForObject(item)
                 if (node != null) {
                     node.reveal()
                 }
@@ -556,10 +592,10 @@ function getStringValue(item, col) {
     }
 }
 
-function getDateValue(item, col) {
+function getNumericValue(item, col) {
     let value = item.valueForColumn(col)
     if (value) {
-        return value
+        return +(value.toString())
     } else {
         return null
     }
@@ -614,4 +650,28 @@ function isNextAction(atom, item) {
         item = item.parent
     }
     return false
+}
+
+function minDate(a, b) {
+    if (a == null) {
+        return b
+    } else if (b == null) {
+        return a
+    } else if (a <= b) {
+        return a
+    } else {
+        return b
+    }
+}
+
+function maxDate(a, b) {
+    if (a == null) {
+        return b
+    } else if (b == null) {
+        return a
+    } else if (a >= b) {
+        return a
+    } else {
+        return b
+    }
 }
