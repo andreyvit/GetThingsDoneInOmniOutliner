@@ -23,6 +23,7 @@ var _ = function(){
             isCommitted: false,
             isSchedulingCovered: true,
             shouldDeadlineDefaultToStartDay: true,
+            isToday: true,
         },
         'Day': {
             isCommitted: true,
@@ -200,6 +201,28 @@ var _ = function(){
 
             // TODO: Mon-Fri = till end of this week, Sat-Sun = till end of next week
             this.planningHorizon = this.startOfDay(this.addDays(this.today, 7))
+
+            this.namedStyles = {
+                folder: this.requireNamedStyle('Heading 2'),
+                urgent: this.requireNamedStyle('Urgent'),
+                attention: this.requireNamedStyle('Attention'),
+                due: this.requireNamedStyle('Past Due'),
+                future: this.requireNamedStyle('Future'),
+                review: this.requireNamedStyle('Review'),
+                done: this.requireNamedStyle('Done'),
+            }
+
+            this.columns = {
+                done: this.requireColumn('D'),
+                doneDate: this.requireColumn('Done'),
+                type: this.requireColumn('Type'),
+                when: this.requireColumn('When'),
+                task: this.requireColumn('Task'),
+                deadline: this.requireColumn('Deadline'),
+                start: this.requireColumn('Start'),
+                verbose: this.requireColumn('V'),
+                reserve: this.requireColumn('Re'),
+            }
         }
 
         addDays(date, n) {
@@ -220,53 +243,43 @@ var _ = function(){
             }
             return d
         }
+
+        requireColumn(title) {
+            const column = this.outline.columns.byTitle(title)
+            if (column == null) {
+                throw new Error("Cannot find column " + title)
+            }
+            return column
+        }
+
+        requireNamedStyle(name) {
+            const style = this.outline.namedStyles.byName(name)
+            if (style == null) {
+                throw new Error("Cannot find named style " + name)
+            }
+            return style
+        }
     }
 
 	const action = new PlugIn.Action(function(selection, sender){
         const document = selection.document
         const outline = document.outline
 
-        const gs = new Globals(outline, new Date())
-
-        const doneColumn = outline.columns.byTitle('D')
-        const doneDateColumn = outline.columns.byTitle('Done')
-        const typeColumn = outline.columns.byTitle('Type')
-        const whenColumn = outline.columns.byTitle('When')
-        const taskColumn = outline.columns.byTitle('Task')
-        const deadlineColumn = outline.columns.byTitle('Deadline')
-        const startColumn = outline.columns.byTitle('Start')
-        const verboseColumn = outline.columns.byTitle('V')
-        const reserveColumn = outline.columns.byTitle('Re')
-
-        console.clear()
-        console.log(JSON.stringify({now: gs.now, today: gs.today, tomorrow: gs.tomorrow}, null, 2))
-
-        const folderStyle = requireNamedStyle('Heading 2')
-        const urgentStyle = requireNamedStyle('Urgent')
-        const attentionStyle = requireNamedStyle('Attention')
-        const dueStyle = requireNamedStyle('Past Due')
-        const futureStyle = requireNamedStyle('Future')
-        const reviewStyle = requireNamedStyle('Review')
-        const doneStyle = requireNamedStyle('Done')
-
-        var pendingChanges = []
-        var itemsToCollapse = []
-        var itemsToReveal = []
-
-        function loadItem(outlineItem) {
+        function loadItem(outlineItem, columns) {
             let item = {
                 outlineItem,
 
-                typeColumnValue: getEnumValue(outlineItem, typeColumn),
-                title: getStringValue(outlineItem, taskColumn),
-                timeframeColumnValue: getEnumValue(outlineItem, whenColumn),
-                isVerbose: (outlineItem.level === 0 || getCheckboxValue(outlineItem, verboseColumn)),
-                isDone: getCheckboxValue(outlineItem, doneColumn),
-                doneDate: outlineItem.valueForColumn(doneDateColumn),
+                typeColumnValue: getEnumValue(outlineItem, columns.type),
+                title: getStringValue(outlineItem, columns.task),
+                timeframeColumnValue: getEnumValue(outlineItem, columns.when),
+                isVerbose: (outlineItem.level === 0 || getCheckboxValue(outlineItem, columns.verbose)),
+                isDone: getCheckboxValue(outlineItem, columns.done),
+                doneDate: outlineItem.valueForColumn(columns.doneDate),
 
-                startDate: outlineItem.valueForColumn(startColumn),
-                reservedDays: getNumericValue(outlineItem, reserveColumn),  // how much time you think this task will take
-                deadline: outlineItem.valueForColumn(deadlineColumn),
+                startDate: outlineItem.valueForColumn(columns.start),
+                reservedDays: getNumericValue(outlineItem, columns.reserve),  // how much time you think this task will take
+                deadline: outlineItem.valueForColumn(columns.deadline),
+
                 timeframe: timeframes.unspecified,
                 behavior: behaviors.default,
 
@@ -307,8 +320,8 @@ var _ = function(){
             return item
         }
 
-        function processItem(item, atom, context) {
-            let children = item.outlineItem.children.map(loadItem)
+        function processItem(gs, item, atom, context) {
+            let children = item.outlineItem.children.map((i) => loadItem(i, gs.columns))
 
             let childrenContext = {...context}
 
@@ -340,6 +353,26 @@ var _ = function(){
                 })
             }
 
+            // daily
+            if (context.isUnderDailyChecklist) {
+                if (item.startDate == null || item.startDate < gs.today) {
+                    item.outlineItem.setValueForColumn(gs.today, gs.columns.start)
+                    if (item.startDate != null) {
+                        setCheckboxValue(item.outlineItem, gs.columns.done, false)
+                        item.isDone = false
+                    }
+                    item.startDate = gs.today
+                }
+                if (item.timeframe === timeframes.unspecified) {
+                    item.timeframe = timeframes.Today
+                }
+            } else {
+                if (item.timeframe.isCommitted && item.startDate == null) {
+                    item.outlineItem.setValueForColumn(gs.today, gs.columns.start)
+                    item.startDate = gs.today
+                }
+            }
+
             let isSchedulingCovered = context.isSchedulingCovered
 
             let urgency = null, targetDate = null, redDate = null, criticalDate = null
@@ -355,27 +388,15 @@ var _ = function(){
                 urgency = urgencies.future
                 isSchedulingCovered = true
             }
-            if (urgency == null && context.isUnderDailyChecklist) {
-                urgency = urgencies.normal
+            if (urgency == null && item.timeframe.isToday) {
+                if (context.isUnderDailyChecklist) {
+                    urgency = urgencies.normal
+                } else if (item.startDate < gs.tomorrow) {
+                    urgency = urgencies.pastDue
+                } else {
+                    urgency = urgencies.critical
+                }
                 isSchedulingCovered = true
-            }
-
-            if (context.isUnderDailyChecklist) {
-                if (item.startDate == null || item.startDate < gs.today) {
-                    item.outlineItem.setValueForColumn(gs.today, startColumn)
-                    item.startDate = gs.today
-                }
-                if (item.startDate != null && item.startDate < gs.today) {
-                    resetChecked(item.outlineItem)
-                }
-                if (item.timeframe === timeframes.unspecified) {
-                    item.timeframe = timeframes.Today
-                }
-            } else {
-                if (item.timeframe.isCommitted && item.startDate == null) {
-                    item.outlineItem.setValueForColumn(gs.today, startColumn)
-                    item.startDate = gs.today
-                }
             }
 
             if (item.timeframe.shouldDeadlineDefaultToStartDay && item.deadline == null && item.startDate != null) {
@@ -410,9 +431,9 @@ var _ = function(){
             }
 
             if (item.isDone && item.doneDate == null) {
-                item.outlineItem.setValueForColumn(gs.now, doneDateColumn)
+                item.outlineItem.setValueForColumn(gs.now, gs.columns.doneDate)
             } else if (!item.isDone && item.doneDate != null) {
-                item.outlineItem.setValueForColumn(null, doneDateColumn)
+                item.outlineItem.setValueForColumn(null, gs.columns.doneDate)
             }
 
             let isAttentionRequiredByDescendants = false
@@ -430,7 +451,7 @@ var _ = function(){
                 let isFirstChild = true
                 children.forEach((child) => {
                     let isChildNonNextAction = (atom != null && !isFirstChild)
-                    let rv = processItem(child, atom, childrenContext)
+                    let rv = processItem(gs, child, atom, childrenContext)
                     if (atom != null) {
                         if (isFirstChild && !isSchedulingCovered && rv.isSchedulingCovered) {
                             isSchedulingCovered = true
@@ -472,13 +493,13 @@ var _ = function(){
                 if (context.backlogItem != null) {
                     if (shouldBeInBacklog && !context.isUnderBacklog) {
                         // move to backlog
-                        pendingChanges.push(function() {
+                        gs.pendingChanges.push(function() {
                             console.log(`moving to backlog: ${item.title}`)
                             outline.moveItems([item.outlineItem], context.backlogItem.outlineItem.end)
                         })
                     } else if (!shouldBeInBacklog && context.isUnderBacklog) {
                         // move out of backlog
-                        pendingChanges.push(function() {
+                        gs.pendingChanges.push(function() {
                             console.log(`moving out of backlog: ${item.title}`)
                             outline.moveItems([item.outlineItem], context.backlogItem.outlineItem.before)
                         })
@@ -493,19 +514,21 @@ var _ = function(){
                 }
             }
 
-            toggleNamedStyle(item.outlineItem, reviewStyle, isMarkedAsRequiringReview)
-            toggleNamedStyle(item.outlineItem, folderStyle, item.behavior.isStyledAsFolder)
-            toggleNamedStyle(item.outlineItem, doneStyle, item.isDone)
-            toggleNamedStyle(item.outlineItem, futureStyle, urgency.futureStyle)
-            toggleNamedStyle(item.outlineItem, attentionStyle, urgency.attentionStyle)
-            toggleNamedStyle(item.outlineItem, dueStyle, urgency.dueStyle)
-            toggleNamedStyle(item.outlineItem, urgentStyle, urgency.urgentStyle)
+            let changes = {
+                styles: {
+                    review: isMarkedAsRequiringReview,
+                    folder: item.behavior.isStyledAsFolder,
+                    done: item.isDone,
+                    future: urgency.futureStyle,
+                    attention: urgency.attentionStyle,
+                    due: urgency.dueStyle,
+                    urgent: urgency.urgentStyle,
+                },
 
-            if (isAttentionRequired) {
-                itemsToReveal.push(item.outlineItem)
-            } else if (shouldBeCollapsed) {
-                itemsToCollapse.push(item.outlineItem)
+                expanded: (isAttentionRequired ? true : (shouldBeCollapsed ? false : null)),
             }
+
+            applyChanges(gs, item.outlineItem, changes)
 
             let rv = {
                 isSchedulingCovered,
@@ -518,6 +541,7 @@ var _ = function(){
                 let itemInfo = {
                     item,
                     context,
+                    changes,
                     urgency: urgency.name, targetDate, redDate, criticalDate,
                     atom: (atom ? (atom.title || '<untitled>') : null),
                     isSchedulingCovered,
@@ -535,35 +559,29 @@ var _ = function(){
             return rv
         }
 
-        function executeActions(outlineItem, actions) {
-
-        }
-
-        function resetChecked(outlineItem) {
-            outlineItem.setValueForColumn(State.Unchecked, doneColumn)
-        }
-
-        function requireNamedStyle(name) {
-            const style = outline.namedStyles.byName(name)
-            if (style == null) {
-                throw new Error("Cannot find named style " + name)
-            }
-            return style
-        }
         function run() {
-            let rootItem = loadItem(outline.rootItem)
+            const gs = new Globals(outline, new Date())
+
+            console.clear()
+            console.log(JSON.stringify({now: gs.now, today: gs.today, tomorrow: gs.tomorrow}, null, 2))
+
+            gs.pendingChanges = []
+            gs.itemsToCollapse = []
+            gs.itemsToReveal = []
+
+            let rootItem = loadItem(outline.rootItem, gs.columns)
             let rootContext = {
                 isSchedulingCovered: false,
                 isUnderBacklog: false,
                 isUnderDailyChecklist: false,
                 backlogItem: null,
             }
-            processItem(rootItem, null, rootContext)
+            processItem(gs, rootItem, null, rootContext)
 
-            for (let change of pendingChanges) {
+            for (let change of gs.pendingChanges) {
                 change()
             }
-            for (let outlineItem of itemsToCollapse) {
+            for (let outlineItem of gs.itemsToCollapse) {
                 for (let editor of document.editors) {
                     let node = editor.nodeForObject(outlineItem)
                     if (node != null && node.isExpanded && node.canCollapse) {
@@ -571,7 +589,7 @@ var _ = function(){
                     }
                 }
             }
-            for (let outlineItem of itemsToReveal) {
+            for (let outlineItem of gs.itemsToReveal) {
                 for (let editor of document.editors) {
                     let node = editor.nodeForObject(outlineItem)
                     if (node != null) {
@@ -601,6 +619,14 @@ var _ = function(){
             return urgencies.attention
         } else {
             return null
+        }
+    }
+
+    function applyChanges(gs, outlineItem, changes) {
+        applyStyles(outlineItem, changes.styles, gs.namedStyles)
+
+        if (changes.expanded != null) {
+            (changes.expanded ? gs.itemsToReveal : gs.itemsToCollapse).push(outlineItem)
         }
     }
 
@@ -655,6 +681,10 @@ function getCheckboxValue(outlineItem, col) {
     }
 }
 
+function setCheckboxValue(outlineItem, col, value) {
+    outlineItem.setValueForColumn((value ? State.Checked : State.Unchecked), col)
+}
+
 function toggleNamedStyle(outlineItem, namedStyle, apply) {
     let applied = hasNamedStyle(outlineItem, namedStyle)
     if (applied != apply) {
@@ -673,6 +703,16 @@ function hasNamedStyle(outlineItem, namedStyle) {
         }
     }
     return false
+}
+
+function applyStyles(outlineItem, styles, namedStyles) {
+    for (let k in styles) if (styles.hasOwnProperty(k)) {
+        let namedStyle = namedStyles[k]
+        if (!namedStyle) {
+            throw new Error(`unknown named style ${k}`)
+        }
+        toggleNamedStyle(outlineItem, namedStyle, styles[k])
+    }
 }
 
 function ndays(n) {
