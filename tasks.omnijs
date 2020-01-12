@@ -179,11 +179,29 @@ var _ = function(){
     const specials = {
         backlog: {
             name: 'backlog',
+            itemTitle: 'BACKLOG',
+            styles: {
+                special: true,
+            },
         },
         daily: {
             name: 'daily',
+            itemTitle: 'DAILY',
+            styles: {
+            },
+        },
+        done : {
+            name: 'done',
+            itemTitle: 'DONE',
+            styles: {
+            },
         },
     }
+    const allSpecials = [
+        specials.backlog,
+        specials.daily,
+        specials.done,
+    ]
 
     const actionWords = `
         обсудить
@@ -210,6 +228,7 @@ var _ = function(){
                 future: this.requireNamedStyle('Future'),
                 review: this.requireNamedStyle('Review'),
                 done: this.requireNamedStyle('Done'),
+                special: this.requireNamedStyle('Special Folder'),
             }
 
             this.columns = {
@@ -288,14 +307,7 @@ var _ = function(){
                 special: null,
             }
 
-            if (item.title != null) {
-                let title = item.title.toUpperCase()
-                if (title === "BACKLOG") {
-                    item.special = specials.backlog
-                } else if (title === "DAILY") {
-                    item.special = specials.daily
-                }
-            }
+            item.special = detectSpecial(item)
 
             if (item.timeframeColumnValue != null) {
                 if (!timeframes.hasOwnProperty(item.timeframeColumnValue)) {
@@ -318,6 +330,16 @@ var _ = function(){
             }
 
             return item
+        }
+
+        function detectSpecial(item) {
+            let title = item.title.toUpperCase()
+            for (let special of allSpecials) {
+                if (title === special.itemTitle) {
+                    return special
+                }
+            }
+            return null
         }
 
         function processItem(gs, item, atom, context) {
@@ -523,9 +545,14 @@ var _ = function(){
                     attention: urgency.attentionStyle,
                     due: urgency.dueStyle,
                     urgent: urgency.urgentStyle,
+                    special: false,
                 },
 
                 expanded: (isAttentionRequired ? true : (shouldBeCollapsed ? false : null)),
+            }
+
+            if (item.special) {
+                copyStyleFlags(changes.styles, item.special.styles)
             }
 
             applyChanges(gs, item.outlineItem, changes)
@@ -742,5 +769,13 @@ function maxDate(a, b) {
         return a
     } else {
         return b
+    }
+}
+
+function copyStyleFlags(dst, src) {
+    if (src != null) {
+        for (let name in src) if (src.hasOwnProperty(name)) {
+            dst[name] = src[name]
+        }
     }
 }
